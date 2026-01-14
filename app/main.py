@@ -30,6 +30,7 @@ def index(request: Request):
 def upload_file(
     upload_date: date = Form(...),
     mode: Literal["reject", "merge", "replace"] = Form("reject"),
+    source: str | None = Form(None),
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
 ):
@@ -38,6 +39,8 @@ def upload_file(
             session=session,
             upload_date=upload_date,
             file_bytes=file.file.read(),
+            source=source,
+            file_name=file.filename,
             mode=mode,
         )
     except IngestError as exc:

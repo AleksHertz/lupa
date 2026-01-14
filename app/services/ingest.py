@@ -1,6 +1,7 @@
 import io
 import logging
-from datetime import date, timedelta
+import re
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 import pandas as pd
@@ -25,6 +26,24 @@ COLUMN_ALIASES = {
 
 class IngestError(Exception):
     pass
+
+
+def date_from_filename(name: str, now: datetime) -> date | None:
+    match = re.search(r"(\d{2})\.(\d{2})", name)
+    if not match:
+        return None
+    day = int(match.group(1))
+    month = int(match.group(2))
+    try:
+        candidate = date(now.year, month, day)
+    except ValueError:
+        return None
+    if candidate > now.date() + timedelta(days=7):
+        try:
+            candidate = date(now.year - 1, month, day)
+        except ValueError:
+            return None
+    return candidate
 
 
 def _normalize_columns(columns: list[str]) -> dict[str, str]:
@@ -125,8 +144,15 @@ def ingest_excel(
     session: Session,
     upload_date: date,
     file_bytes: bytes,
+    source: str | None = None,
+    file_name: str | None = None,
     mode: Literal["reject", "merge", "replace"] = "reject",
 ) -> dict[str, int]:
+    if source and source.strip().lower() == "альянс" and file_name:
+        parsed_date = date_from_filename(file_name, datetime.now())
+        if parsed_date is not None:
+            upload_date = parsed_date
+
     logger.info("Starting ingest for %s", upload_date)
     df = pd.read_excel(
         io.BytesIO(file_bytes),

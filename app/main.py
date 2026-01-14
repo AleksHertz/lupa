@@ -54,6 +54,7 @@ def series(
     sku: str | None = Query(default=None),
     warehouse: str | None = Query(default=None),
     manufacturer: str | None = Query(default=None),
+    project_label: str | None = Query(default=None),
     date_from: date = Query(...),
     date_to: date = Query(...),
     session: Session = Depends(get_session),
@@ -63,6 +64,7 @@ def series(
         sku=sku,
         warehouse=warehouse,
         manufacturer=manufacturer,
+        project_label=project_label,
         date_from=date_from,
         date_to=date_to,
     )

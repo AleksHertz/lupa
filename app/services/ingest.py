@@ -18,6 +18,12 @@ def _normalize_header(value: str) -> str:
     return " ".join(normalized.split())
 
 
+PROJECT_GROUPS = {
+    "Корея": {"Корея"},
+    "Китай": {"Китай"},
+}
+
+
 REQUIRED_COLUMNS = {"warehouse", "sku", "stock_qty"}
 
 COLUMN_ALIASES = {
@@ -27,6 +33,7 @@ COLUMN_ALIASES = {
     "nomenclature": ["nomenclature", "номенклатура", "name", "item"],
     "stock_qty": ["stock_qty", "остаток", "stock"],
     "price": ["price", "цена"],
+    "group": ["group", "группа"],
 }
 
 ALLIANCE_COLUMN_ALIASES = {
@@ -97,6 +104,8 @@ def _validate_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["nomenclature"] = None
     if "price" not in df.columns:
         df["price"] = None
+    if "group" not in df.columns:
+        df["group"] = None
     return df
 
 
@@ -129,7 +138,20 @@ def _prepare_alliance_df(df: pd.DataFrame) -> pd.DataFrame:
         df["manufacturer"] = None
     if "nomenclature" not in df.columns:
         df["nomenclature"] = None
+    if "group" not in df.columns:
+        df["group"] = None
     return df
+
+
+def _project_label_for_group(group: str | None) -> str | None:
+    if group is None or pd.isna(group):
+        return None
+    normalized = str(group).strip()
+    if normalized in PROJECT_GROUPS["Корея"]:
+        return "Корея"
+    if normalized in PROJECT_GROUPS["Китай"]:
+        return "Китай"
+    return None
 
 
 def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
@@ -145,6 +167,8 @@ def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
             price_start_day=("price", "first"),
             price_end_day=("price", "last"),
             nomenclature=("nomenclature", "first"),
+            group=("group", "first"),
+            project_label=("project_label", "first"),
         )
         .reset_index()
     )
@@ -223,6 +247,7 @@ def ingest_excel(
         df = _prepare_alliance_df(df)
     else:
         df = _validate_columns(df)
+    df["project_label"] = df["group"].map(_project_label_for_group)
     aggregated = _aggregate_daily(df)
 
     warehouses = aggregated["warehouse"].dropna().unique().tolist()
@@ -284,6 +309,8 @@ def ingest_excel(
             "sku",
             "manufacturer",
             "nomenclature",
+            "group",
+            "project_label",
             "stock_qty",
             "price_start_day",
             "price_end_day",
@@ -298,6 +325,8 @@ def ingest_excel(
             "sku",
             "manufacturer",
             "nomenclature",
+            "group",
+            "project_label",
             "sold_qty",
             "replenished_qty",
             "price_start_day",

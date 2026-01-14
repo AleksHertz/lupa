@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stock Delta Analyzer</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>Ежедневный анализ автотоваров</h1>
+      <p>Загрузите свежий Excel и сравните остатки с предыдущим днём.</p>
+    </header>
+
+    <section class="card">
+      <h2>Загрузка Excel</h2>
+      <form id="upload-form">
+        <label>
+          Дата загрузки
+          <input type="date" name="upload_date" required />
+        </label>
+        <label>
+          Режим
+          <select name="mode">
+            <option value="reject">Отклонить повтор</option>
+            <option value="merge">Обновить (сохранить первую цену дня)</option>
+            <option value="replace">Перезаписать</option>
+          </select>
+        </label>
+        <label>
+          Excel файл
+          <input type="file" name="file" accept=".xlsx,.xls" required />
+        </label>
+        <button type="submit">Загрузить</button>
+      </form>
+      <div id="upload-status" class="status"></div>
+    </section>
+
+    <section class="card">
+      <h2>Фильтры</h2>
+      <div class="filters">
+        <label>
+          Склад
+          <input type="text" id="filter-warehouse" placeholder="Warehouse" />
+        </label>
+        <label>
+          Артикул
+          <input type="text" id="filter-sku" placeholder="SKU" />
+        </label>
+        <label>
+          Производитель
+          <input type="text" id="filter-manufacturer" placeholder="Manufacturer" />
+        </label>
+        <label>
+          Дата с
+          <input type="date" id="filter-date-from" />
+        </label>
+        <label>
+          Дата по
+          <input type="date" id="filter-date-to" />
+        </label>
+        <button id="apply-filters">Показать</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Динамика продаж и пополнений</h2>
+      <div id="chart" class="chart"></div>
+    </section>
+
+    <section class="card">
+      <h2>KPI за период</h2>
+      <div class="kpi-grid">
+        <div class="kpi">
+          <span>Всего продано</span>
+          <strong id="kpi-sold">—</strong>
+        </div>
+        <div class="kpi">
+          <span>Всего пополнено</span>
+          <strong id="kpi-replenished">—</strong>
+        </div>
+        <div class="kpi">
+          <span>Макс. всплеск продаж</span>
+          <strong id="kpi-max-sold">—</strong>
+        </div>
+        <div class="kpi">
+          <span>Макс. всплеск пополнений</span>
+          <strong id="kpi-max-repl">—</strong>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

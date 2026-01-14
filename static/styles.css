@@ -1,0 +1,90 @@
+:root {
+  font-family: "Inter", "Segoe UI", sans-serif;
+  color: #1a1a1a;
+  background: #f5f6f8;
+}
+
+body {
+  margin: 0;
+}
+
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+header h1 {
+  margin-bottom: 8px;
+}
+
+.card {
+  background: #fff;
+  padding: 20px 24px;
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgba(16, 24, 40, 0.08);
+}
+
+form,
+.filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  font-size: 14px;
+  gap: 6px;
+}
+
+input,
+select,
+button {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #d0d5dd;
+}
+
+button {
+  background: #1d4ed8;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #1e40af;
+}
+
+.status {
+  margin-top: 12px;
+  font-size: 14px;
+}
+
+.chart {
+  width: 100%;
+  min-height: 360px;
+}
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+.kpi {
+  background: #f8fafc;
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.kpi strong {
+  display: block;
+  font-size: 20px;
+  margin-top: 6px;
+}

@@ -15,10 +15,11 @@ def _series_cache_key(
     sku: str | None,
     warehouse: str | None,
     manufacturer: str | None,
+    project_label: str | None,
     date_from: date,
     date_to: date,
 ) -> tuple[Any, ...]:
-    return (sku, warehouse, manufacturer, date_from, date_to)
+    return (sku, warehouse, manufacturer, project_label, date_from, date_to)
 
 
 def get_series(
@@ -26,10 +27,13 @@ def get_series(
     sku: str | None,
     warehouse: str | None,
     manufacturer: str | None,
+    project_label: str | None,
     date_from: date,
     date_to: date,
 ) -> dict[str, Any]:
-    cache_key = _series_cache_key(sku, warehouse, manufacturer, date_from, date_to)
+    cache_key = _series_cache_key(
+        sku, warehouse, manufacturer, project_label, date_from, date_to
+    )
     if cache_key in SERIES_CACHE:
         return SERIES_CACHE[cache_key]
 
@@ -51,6 +55,8 @@ def get_series(
         stmt = stmt.where(DailyDelta.warehouse == warehouse)
     if manufacturer:
         stmt = stmt.where(DailyDelta.manufacturer == manufacturer)
+    if project_label:
+        stmt = stmt.where(DailyDelta.project_label == project_label)
 
     rows = session.execute(stmt).all()
     dates = [row.date.isoformat() for row in rows]

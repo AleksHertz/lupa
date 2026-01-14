@@ -250,25 +250,19 @@ def ingest_excel(
 
     prev_date = upload_date - timedelta(days=1)
     prev_df = _load_prev_snapshot(session, prev_date, warehouses)
-    if is_alliance and not prev_df.empty:
-        existing_keys = aggregated[["warehouse", "sku", "manufacturer"]].drop_duplicates()
-        missing = prev_df.merge(
-            existing_keys,
-            on=["warehouse", "sku", "manufacturer"],
-            how="left",
-            indicator=True,
-        )
-        missing = missing[missing["_merge"] == "left_only"].drop(columns=["_merge"])
-        if not missing.empty:
-            missing["stock_qty"] = 0
-            missing["price_start_day"] = None
-            missing["price_end_day"] = None
-            missing["nomenclature"] = None
-            aggregated = pd.concat(
-                [aggregated, missing[aggregated.columns]], ignore_index=True
-            )
+    if is_alliance:
+        key_columns = ["warehouse", "sku", "manufacturer"]
+        prev_keys = prev_df[key_columns] if not prev_df.empty else prev_df
+        all_keys = pd.concat(
+            [aggregated[key_columns], prev_keys],
+            ignore_index=True,
+        ).drop_duplicates()
+        merged = all_keys.merge(aggregated, on=key_columns, how="left")
+        merged["stock_qty"] = merged["stock_qty"].fillna(0).astype(int)
+    else:
+        merged = aggregated.copy()
 
-    merged = aggregated.merge(
+    merged = merged.merge(
         prev_df,
         on=["warehouse", "sku", "manufacturer"],
         how="left",

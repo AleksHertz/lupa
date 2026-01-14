@@ -11,7 +11,7 @@ from starlette.requests import Request
 
 from app.db import get_session
 from app.services.ingest import IngestError, ingest_excel
-from app.services.query import get_series, get_suggestions
+from app.services.query import get_series, get_suggestions, get_top_sales
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -70,11 +70,36 @@ def series(
 
 @app.get("/filters/suggestions")
 def filter_suggestions(
-    field: str = Query(..., description="sku, warehouse, manufacturer, nomenclature"),
+    field: str = Query(..., description="sku, warehouse, manufacturer, name"),
     q: str = Query(""),
     session: Session = Depends(get_session),
 ):
     return {"items": get_suggestions(session=session, field=field, query=q)}
+
+
+@app.get("/top")
+def top_sales(
+    limit: Literal[100, 500, 2000] = Query(100),
+    source: str | None = Query(default=None),
+    warehouses: list[str] | None = Query(default=None, alias="warehouse"),
+    sku: str | None = Query(default=None),
+    name: str | None = Query(default=None),
+    project_label: str | None = Query(default=None),
+    group_by_warehouse: bool = Query(default=True),
+    session: Session = Depends(get_session),
+):
+    return {
+        "items": get_top_sales(
+            session=session,
+            limit=limit,
+            source=source,
+            warehouses=warehouses,
+            sku=sku,
+            name=name,
+            project_label=project_label,
+            group_by_warehouse=group_by_warehouse,
+        )
+    }
 
 
 @app.get("/health")

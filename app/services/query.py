@@ -85,14 +85,15 @@ def _suggestion_cache_key(field: str, query: str) -> tuple[str, str]:
 
 def get_suggestions(session: Session, field: str, query: str, limit: int = 20) -> list[str]:
     cache_key = _suggestion_cache_key(field, query)
-    if cache_key in SUGGESTION_CACHE:
+    cacheable_fields = {"sku", "name"}
+    if field in cacheable_fields and cache_key in SUGGESTION_CACHE:
         return SUGGESTION_CACHE[cache_key]
 
     allowed_fields = {
         "sku": DailyDelta.sku,
         "warehouse": DailyDelta.warehouse,
         "manufacturer": DailyDelta.manufacturer,
-        "nomenclature": DailyDelta.nomenclature,
+        "name": DailyDelta.name,
     }
     if field not in allowed_fields:
         return []
@@ -107,5 +108,59 @@ def get_suggestions(session: Session, field: str, query: str, limit: int = 20) -
         .limit(limit)
     )
     rows = session.execute(stmt).scalars().all()
-    SUGGESTION_CACHE[cache_key] = rows
+    if field in cacheable_fields:
+        SUGGESTION_CACHE[cache_key] = rows
     return rows
+
+
+def get_top_sales(
+    session: Session,
+    limit: int,
+    source: str | None = None,
+    warehouses: list[str] | None = None,
+    sku: str | None = None,
+    name: str | None = None,
+    project_label: str | None = None,
+    group_by_warehouse: bool = True,
+) -> list[dict[str, Any]]:
+    group_by_columns = [
+        DailyDelta.sku,
+        DailyDelta.name,
+        DailyDelta.manufacturer,
+        DailyDelta.brand,
+    ]
+    if group_by_warehouse:
+        warehouse_column = DailyDelta.warehouse
+        group_by_columns.append(DailyDelta.warehouse)
+    else:
+        warehouse_column = func.min(DailyDelta.warehouse)
+
+    stmt = (
+        select(
+            DailyDelta.sku,
+            DailyDelta.name,
+            DailyDelta.manufacturer,
+            DailyDelta.brand,
+            warehouse_column.label("warehouse"),
+            func.sum(DailyDelta.sold_qty).label("sold"),
+            func.sum(DailyDelta.replenished_qty).label("repl"),
+            func.max(DailyDelta.price_end_day).label("last_price"),
+        )
+        .group_by(*group_by_columns)
+        .order_by(func.sum(DailyDelta.sold_qty).desc())
+        .limit(limit)
+    )
+
+    if source:
+        stmt = stmt.where(DailyDelta.source == source)
+    if warehouses:
+        stmt = stmt.where(DailyDelta.warehouse.in_(warehouses))
+    if sku:
+        stmt = stmt.where(DailyDelta.sku == sku)
+    if name:
+        stmt = stmt.where(DailyDelta.name.ilike(f"%{name}%"))
+    if project_label:
+        stmt = stmt.where(DailyDelta.project_label == project_label)
+
+    rows = session.execute(stmt).mappings().all()
+    return [dict(row) for row in rows]

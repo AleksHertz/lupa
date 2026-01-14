@@ -12,6 +12,12 @@ from app.models import DailyDelta, DailySnapshot
 
 logger = logging.getLogger(__name__)
 
+
+def _normalize_header(value: str) -> str:
+    normalized = value.strip().lower().replace("ё", "е")
+    return " ".join(normalized.split())
+
+
 REQUIRED_COLUMNS = {"warehouse", "sku", "stock_qty"}
 
 COLUMN_ALIASES = {
@@ -21,6 +27,27 @@ COLUMN_ALIASES = {
     "nomenclature": ["nomenclature", "номенклатура", "name", "item"],
     "stock_qty": ["stock_qty", "остаток", "stock"],
     "price": ["price", "цена"],
+}
+
+ALLIANCE_COLUMN_ALIASES = {
+    "артикул": "sku",
+    "наименование": "name",
+    "цена": "price",
+    "артикул производителя": "mfg_sku",
+    "производитель": "manufacturer",
+    "марка": "brand",
+    "группа": "group",
+    "остаток варшавка": "stock_warsawka",
+    "остаток люберцы": "stock_lubertsy",
+    "остаток кетчерская": "stock_ketcherskaya",
+    "остаток дмитровка": "stock_dmitrovka",
+}
+
+ALLIANCE_WAREHOUSE_COLUMNS = {
+    "stock_warsawka": "Варшавка",
+    "stock_lubertsy": "Люберцы",
+    "stock_ketcherskaya": "Кетчерская",
+    "stock_dmitrovka": "Дмитровка",
 }
 
 
@@ -48,10 +75,10 @@ def date_from_filename(name: str, now: datetime) -> date | None:
 
 def _normalize_columns(columns: list[str]) -> dict[str, str]:
     mapping: dict[str, str] = {}
-    lowered = {col.lower().strip(): col for col in columns}
+    lowered = {_normalize_header(col): col for col in columns}
     for target, variants in COLUMN_ALIASES.items():
         for variant in variants:
-            key = variant.lower()
+            key = _normalize_header(variant)
             if key in lowered:
                 mapping[lowered[key]] = target
                 break
@@ -73,9 +100,41 @@ def _validate_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _prepare_alliance_df(df: pd.DataFrame) -> pd.DataFrame:
+    normalized_columns = {col: _normalize_header(col) for col in df.columns}
+    df = df.rename(columns=normalized_columns)
+    df = df.rename(columns=ALLIANCE_COLUMN_ALIASES)
+    if "sku" not in df.columns:
+        raise IngestError("Missing required columns: sku")
+    for column in ALLIANCE_WAREHOUSE_COLUMNS:
+        if column not in df.columns:
+            df[column] = 0
+    df["source"] = "альянс"
+    id_vars = [col for col in df.columns if col not in ALLIANCE_WAREHOUSE_COLUMNS]
+    df = df.melt(
+        id_vars=id_vars,
+        value_vars=list(ALLIANCE_WAREHOUSE_COLUMNS.keys()),
+        var_name="warehouse_key",
+        value_name="stock_qty",
+    )
+    df["warehouse"] = df["warehouse_key"].map(ALLIANCE_WAREHOUSE_COLUMNS)
+    df = df.drop(columns=["warehouse_key"])
+    df["stock_qty"] = pd.to_numeric(df["stock_qty"], errors="coerce").fillna(0).astype(int)
+    if "price" in df.columns:
+        df["price"] = pd.to_numeric(df["price"], errors="coerce")
+    else:
+        df["price"] = None
+    df["nomenclature"] = df.get("name")
+    if "manufacturer" not in df.columns:
+        df["manufacturer"] = None
+    if "nomenclature" not in df.columns:
+        df["nomenclature"] = None
+    return df
+
+
 def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df["stock_qty"] = pd.to_numeric(df["stock_qty"], errors="coerce").fillna(0.0)
+    df["stock_qty"] = pd.to_numeric(df["stock_qty"], errors="coerce").fillna(0).astype(int)
     df["price"] = pd.to_numeric(df["price"], errors="coerce")
     df = df.sort_index()
     keys = ["warehouse", "sku", "manufacturer"]
@@ -148,7 +207,9 @@ def ingest_excel(
     file_name: str | None = None,
     mode: Literal["reject", "merge", "replace"] = "reject",
 ) -> dict[str, int]:
-    if source and source.strip().lower() == "альянс" and file_name:
+    normalized_source = source.strip().lower() if source else None
+    is_alliance = normalized_source == "альянс"
+    if is_alliance and file_name:
         parsed_date = date_from_filename(file_name, datetime.now())
         if parsed_date is not None:
             upload_date = parsed_date
@@ -158,7 +219,10 @@ def ingest_excel(
         io.BytesIO(file_bytes),
         engine="openpyxl",
     )
-    df = _validate_columns(df)
+    if is_alliance:
+        df = _prepare_alliance_df(df)
+    else:
+        df = _validate_columns(df)
     aggregated = _aggregate_daily(df)
 
     warehouses = aggregated["warehouse"].dropna().unique().tolist()
@@ -186,6 +250,23 @@ def ingest_excel(
 
     prev_date = upload_date - timedelta(days=1)
     prev_df = _load_prev_snapshot(session, prev_date, warehouses)
+    if is_alliance and not prev_df.empty:
+        existing_keys = aggregated[["warehouse", "sku", "manufacturer"]].drop_duplicates()
+        missing = prev_df.merge(
+            existing_keys,
+            on=["warehouse", "sku", "manufacturer"],
+            how="left",
+            indicator=True,
+        )
+        missing = missing[missing["_merge"] == "left_only"].drop(columns=["_merge"])
+        if not missing.empty:
+            missing["stock_qty"] = 0
+            missing["price_start_day"] = None
+            missing["price_end_day"] = None
+            missing["nomenclature"] = None
+            aggregated = pd.concat(
+                [aggregated, missing[aggregated.columns]], ignore_index=True
+            )
 
     merged = aggregated.merge(
         prev_df,

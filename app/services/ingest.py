@@ -1,3 +1,4 @@
+import hashlib
 import io
 import logging
 import re
@@ -8,7 +9,7 @@ import pandas as pd
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.models import DailyDelta, DailySnapshot
+from app.models import DailyDelta, DailySnapshot, IngestRun
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,10 @@ ALLIANCE_WAREHOUSE_COLUMNS = {
 
 
 class IngestError(Exception):
+    pass
+
+
+class IngestConflict(IngestError):
     pass
 
 
@@ -232,125 +237,165 @@ def ingest_excel(
     mode: Literal["reject", "merge", "replace"] = "reject",
 ) -> dict[str, int]:
     normalized_source = source.strip().lower() if source else None
+    company = normalized_source or "default"
     is_alliance = normalized_source == "альянс"
     if is_alliance and file_name:
         parsed_date = date_from_filename(file_name, datetime.now())
         if parsed_date is not None:
             upload_date = parsed_date
 
-    logger.info("Starting ingest for %s", upload_date)
-    df = pd.read_excel(
-        io.BytesIO(file_bytes),
-        engine="openpyxl",
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+    existing_hash = session.scalar(
+        select(IngestRun.id)
+        .where(IngestRun.company == company)
+        .where(IngestRun.file_hash == file_hash)
     )
-    if is_alliance:
-        df = _prepare_alliance_df(df)
-    else:
-        df = _validate_columns(df)
-    df["project_label"] = df["group"].map(_project_label_for_group)
-    aggregated = _aggregate_daily(df)
+    if existing_hash:
+        raise IngestConflict("This file has already been uploaded.")
 
-    warehouses = aggregated["warehouse"].dropna().unique().tolist()
-
-    existing = _load_existing_snapshot(session, upload_date, warehouses)
-    if not existing.empty and mode == "reject":
-        raise IngestError(
-            "Data for this date and warehouse already loaded. "
-            "Use mode=merge to update or mode=replace to overwrite."
-        )
-
-    if not existing.empty and mode == "merge":
-        existing = existing.dropna(subset=["price_start_day"])
-        if not existing.empty:
-            aggregated = aggregated.merge(
-                existing,
-                on=["warehouse", "sku", "manufacturer"],
-                how="left",
-                suffixes=("", "_existing"),
-            )
-            aggregated["price_start_day"] = aggregated[
-                "price_start_day_existing"
-            ].combine_first(aggregated["price_start_day"])
-            aggregated = aggregated.drop(columns=["price_start_day_existing"])
-
-    prev_date = upload_date - timedelta(days=1)
-    prev_df = _load_prev_snapshot(session, prev_date, warehouses)
-    if is_alliance:
-        key_columns = ["warehouse", "sku", "manufacturer"]
-        prev_keys = prev_df[key_columns] if not prev_df.empty else prev_df
-        all_keys = pd.concat(
-            [aggregated[key_columns], prev_keys],
-            ignore_index=True,
-        ).drop_duplicates()
-        merged = all_keys.merge(aggregated, on=key_columns, how="left")
-        merged["stock_qty"] = merged["stock_qty"].fillna(0).astype(int)
-    else:
-        merged = aggregated.copy()
-
-    merged = merged.merge(
-        prev_df,
-        on=["warehouse", "sku", "manufacturer"],
-        how="left",
-        suffixes=("", "_prev"),
+    ingest_run = IngestRun(
+        company=company,
+        file_name=file_name or "unknown",
+        file_hash=file_hash,
+        data_date=upload_date,
+        status="failed",
     )
-    merged["stock_qty_prev"] = (
-        merged["stock_qty_prev"].fillna(0.0).astype(float)
-    )
-    merged["sold_qty"] = (merged["stock_qty_prev"] - merged["stock_qty"]).clip(
-        lower=0.0
-    )
-    merged["replenished_qty"] = (
-        merged["stock_qty"] - merged["stock_qty_prev"]
-    ).clip(lower=0.0)
-
-    snapshot_records = merged[
-        [
-            "warehouse",
-            "sku",
-            "manufacturer",
-            "nomenclature",
-            "group",
-            "project_label",
-            "stock_qty",
-            "price_start_day",
-            "price_end_day",
-        ]
-    ].to_dict("records")
-    for record in snapshot_records:
-        record["date"] = upload_date
-
-    delta_records = merged[
-        [
-            "warehouse",
-            "sku",
-            "manufacturer",
-            "nomenclature",
-            "group",
-            "project_label",
-            "sold_qty",
-            "replenished_qty",
-            "price_start_day",
-            "price_end_day",
-        ]
-    ].to_dict("records")
-    for record in delta_records:
-        record["date"] = upload_date
-
-    if warehouses:
-        session.execute(
-            delete(DailySnapshot)
-            .where(DailySnapshot.date == upload_date)
-            .where(DailySnapshot.warehouse.in_(warehouses))
-        )
-        session.execute(
-            delete(DailyDelta)
-            .where(DailyDelta.date == upload_date)
-            .where(DailyDelta.warehouse.in_(warehouses))
-        )
-
-    session.bulk_insert_mappings(DailySnapshot, snapshot_records)
-    session.bulk_insert_mappings(DailyDelta, delta_records)
+    session.add(ingest_run)
     session.commit()
 
-    logger.info("Ingest complete: %s rows", len(snapshot_records))
-    return {"snapshots": len(snapshot_records), "deltas": len(delta_records)}
+    existing_date = session.scalar(
+        select(IngestRun.id)
+        .where(IngestRun.company == company)
+        .where(IngestRun.data_date == upload_date)
+        .where(IngestRun.id != ingest_run.id)
+    )
+    if existing_date:
+        ingest_run.error_message = "Data for this date is already uploaded."
+        session.commit()
+        raise IngestConflict(ingest_run.error_message)
+
+    logger.info("Starting ingest for %s", upload_date)
+    try:
+        df = pd.read_excel(
+            io.BytesIO(file_bytes),
+            engine="openpyxl",
+        )
+        if is_alliance:
+            df = _prepare_alliance_df(df)
+        else:
+            df = _validate_columns(df)
+        df["project_label"] = df["group"].map(_project_label_for_group)
+        aggregated = _aggregate_daily(df)
+
+        warehouses = aggregated["warehouse"].dropna().unique().tolist()
+
+        existing = _load_existing_snapshot(session, upload_date, warehouses)
+        if not existing.empty and mode == "reject":
+            raise IngestConflict(
+                "Data for this date and warehouse already loaded. "
+                "Use mode=merge to update or mode=replace to overwrite."
+            )
+
+        if not existing.empty and mode == "merge":
+            existing = existing.dropna(subset=["price_start_day"])
+            if not existing.empty:
+                aggregated = aggregated.merge(
+                    existing,
+                    on=["warehouse", "sku", "manufacturer"],
+                    how="left",
+                    suffixes=("", "_existing"),
+                )
+                aggregated["price_start_day"] = aggregated[
+                    "price_start_day_existing"
+                ].combine_first(aggregated["price_start_day"])
+                aggregated = aggregated.drop(columns=["price_start_day_existing"])
+
+        prev_date = upload_date - timedelta(days=1)
+        prev_df = _load_prev_snapshot(session, prev_date, warehouses)
+        if is_alliance:
+            key_columns = ["warehouse", "sku", "manufacturer"]
+            prev_keys = prev_df[key_columns] if not prev_df.empty else prev_df
+            all_keys = pd.concat(
+                [aggregated[key_columns], prev_keys],
+                ignore_index=True,
+            ).drop_duplicates()
+            merged = all_keys.merge(aggregated, on=key_columns, how="left")
+            merged["stock_qty"] = merged["stock_qty"].fillna(0).astype(int)
+        else:
+            merged = aggregated.copy()
+
+        merged = merged.merge(
+            prev_df,
+            on=["warehouse", "sku", "manufacturer"],
+            how="left",
+            suffixes=("", "_prev"),
+        )
+        merged["stock_qty_prev"] = (
+            merged["stock_qty_prev"].fillna(0.0).astype(float)
+        )
+        merged["sold_qty"] = (
+            merged["stock_qty_prev"] - merged["stock_qty"]
+        ).clip(lower=0.0)
+        merged["replenished_qty"] = (
+            merged["stock_qty"] - merged["stock_qty_prev"]
+        ).clip(lower=0.0)
+
+        snapshot_records = merged[
+            [
+                "warehouse",
+                "sku",
+                "manufacturer",
+                "nomenclature",
+                "group",
+                "project_label",
+                "stock_qty",
+                "price_start_day",
+                "price_end_day",
+            ]
+        ].to_dict("records")
+        for record in snapshot_records:
+            record["date"] = upload_date
+
+        delta_records = merged[
+            [
+                "warehouse",
+                "sku",
+                "manufacturer",
+                "nomenclature",
+                "group",
+                "project_label",
+                "sold_qty",
+                "replenished_qty",
+                "price_start_day",
+                "price_end_day",
+            ]
+        ].to_dict("records")
+        for record in delta_records:
+            record["date"] = upload_date
+
+        if warehouses:
+            session.execute(
+                delete(DailySnapshot)
+                .where(DailySnapshot.date == upload_date)
+                .where(DailySnapshot.warehouse.in_(warehouses))
+            )
+            session.execute(
+                delete(DailyDelta)
+                .where(DailyDelta.date == upload_date)
+                .where(DailyDelta.warehouse.in_(warehouses))
+            )
+
+        session.bulk_insert_mappings(DailySnapshot, snapshot_records)
+        session.bulk_insert_mappings(DailyDelta, delta_records)
+        ingest_run.status = "ok"
+        session.commit()
+
+        logger.info("Ingest complete: %s rows", len(snapshot_records))
+        return {"snapshots": len(snapshot_records), "deltas": len(delta_records)}
+    except Exception as exc:
+        session.rollback()
+        existing_run = session.get(IngestRun, ingest_run.id)
+        if existing_run is not None:
+            existing_run.error_message = str(exc)
+            session.commit()
+        raise

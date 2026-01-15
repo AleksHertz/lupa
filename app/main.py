@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.db import get_session
-from app.services.ingest import IngestError, ingest_excel
+from app.services.ingest import IngestConflict, IngestError, ingest_excel
 from app.services.query import get_series, get_suggestions, get_top_sales
 
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +43,9 @@ def upload_file(
             file_name=file.filename,
             mode=mode,
         )
+    except IngestConflict as exc:
+        logger.warning("Upload conflict: %s", exc)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except IngestError as exc:
         logger.warning("Upload failed: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc

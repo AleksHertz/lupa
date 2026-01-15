@@ -57,3 +57,25 @@ class DailyDelta(Base):
         Index("ix_delta_source_wh_sku_date", "source", "warehouse", "sku", "date"),
         Index("ix_delta_date_project_label", "date", "project_label"),
     )
+
+
+class IngestRun(Base):
+    __tablename__ = "ingest_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company: Mapped[str] = mapped_column(String(100), index=True)
+    file_name: Mapped[str] = mapped_column(String(255))
+    file_hash: Mapped[str] = mapped_column(String(64))
+    data_date: Mapped[datetime] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    __table_args__ = (
+        Index("ix_ingest_runs_company_data_date", "company", "data_date"),
+        UniqueConstraint(
+            "company",
+            "file_hash",
+            name="uq_ingest_runs_company_file_hash",
+        ),
+    )

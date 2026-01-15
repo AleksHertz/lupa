@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from typing import Literal
 
 import pandas as pd
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.models import DailyDelta, DailySnapshot, IngestRun
@@ -278,7 +278,7 @@ def ingest_excel(
         .where(IngestRun.id != ingest_run.id)
     )
     if existing_date:
-        ingest_run.error_message = "Data for this date is already uploaded."
+        ingest_run.error_message = "Данные за эту дату уже загружены."
         session.commit()
         raise IngestConflict(ingest_run.error_message)
 
@@ -318,35 +318,44 @@ def ingest_excel(
                 ].combine_first(aggregated["price_start_day"])
                 aggregated = aggregated.drop(columns=["price_start_day_existing"])
 
-        prev_date = upload_date - timedelta(days=1)
-        prev_df = _load_prev_snapshot(session, company, prev_date, warehouses)
-        if is_alliance:
-            key_columns = ["warehouse", "sku", "manufacturer"]
-            prev_keys = prev_df[key_columns] if not prev_df.empty else prev_df
-            all_keys = pd.concat(
-                [aggregated[key_columns], prev_keys],
-                ignore_index=True,
-            ).drop_duplicates()
-            merged = all_keys.merge(aggregated, on=key_columns, how="left")
-            merged["stock_qty"] = merged["stock_qty"].fillna(0).astype(int)
-        else:
-            merged = aggregated.copy()
-
-        merged = merged.merge(
-            prev_df,
-            on=["warehouse", "sku", "manufacturer"],
-            how="left",
-            suffixes=("", "_prev"),
+        prev_date = session.scalar(
+            select(func.max(DailySnapshot.data_date))
+            .where(DailySnapshot.company == company)
+            .where(DailySnapshot.data_date < upload_date)
         )
-        merged["stock_qty_prev"] = merged["stock_qty_prev"].fillna(0).astype(int)
-        merged["sold_qty"] = (
-            merged["stock_qty_prev"] - merged["stock_qty"]
-        ).clip(lower=0)
-        merged["replenished_qty"] = (
-            merged["stock_qty"] - merged["stock_qty_prev"]
-        ).clip(lower=0)
-        merged["sold_qty"] = merged["sold_qty"].astype(int)
-        merged["replenished_qty"] = merged["replenished_qty"].astype(int)
+        if prev_date is None:
+            merged = aggregated.copy()
+            merged["sold_qty"] = 0
+            merged["replenished_qty"] = 0
+        else:
+            prev_df = _load_prev_snapshot(session, company, prev_date, warehouses)
+            if is_alliance:
+                key_columns = ["warehouse", "sku", "manufacturer"]
+                prev_keys = prev_df[key_columns] if not prev_df.empty else prev_df
+                all_keys = pd.concat(
+                    [aggregated[key_columns], prev_keys],
+                    ignore_index=True,
+                ).drop_duplicates()
+                merged = all_keys.merge(aggregated, on=key_columns, how="left")
+                merged["stock_qty"] = merged["stock_qty"].fillna(0).astype(int)
+            else:
+                merged = aggregated.copy()
+
+            merged = merged.merge(
+                prev_df,
+                on=["warehouse", "sku", "manufacturer"],
+                how="left",
+                suffixes=("", "_prev"),
+            )
+            merged["stock_qty_prev"] = merged["stock_qty_prev"].fillna(0).astype(int)
+            merged["sold_qty"] = (
+                merged["stock_qty_prev"] - merged["stock_qty"]
+            ).clip(lower=0)
+            merged["replenished_qty"] = (
+                merged["stock_qty"] - merged["stock_qty_prev"]
+            ).clip(lower=0)
+            merged["sold_qty"] = merged["sold_qty"].astype(int)
+            merged["replenished_qty"] = merged["replenished_qty"].astype(int)
 
         snapshot_records = merged[
             [

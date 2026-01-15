@@ -236,6 +236,58 @@ def _load_existing_snapshot(
     )
 
 
+def _load_existing_snapshot_map(
+    session: Session,
+    company: str,
+    upload_date: date,
+) -> dict[tuple[str, str, str | None], dict[str, object]]:
+    stmt = (
+        select(
+            DailySnapshot.id,
+            DailySnapshot.warehouse,
+            DailySnapshot.sku,
+            DailySnapshot.manufacturer,
+            DailySnapshot.price_start_day,
+        )
+        .where(DailySnapshot.company == company)
+        .where(DailySnapshot.data_date == upload_date)
+    )
+    rows = session.execute(stmt).all()
+    return {
+        (row.warehouse, row.sku, row.manufacturer): {
+            "id": row.id,
+            "price_start_day": row.price_start_day,
+        }
+        for row in rows
+    }
+
+
+def _load_existing_delta_map(
+    session: Session,
+    company: str,
+    upload_date: date,
+) -> dict[tuple[str, str, str | None], dict[str, object]]:
+    stmt = (
+        select(
+            DailyDelta.id,
+            DailyDelta.warehouse,
+            DailyDelta.sku,
+            DailyDelta.manufacturer,
+            DailyDelta.price_start_day,
+        )
+        .where(DailyDelta.company == company)
+        .where(DailyDelta.data_date == upload_date)
+    )
+    rows = session.execute(stmt).all()
+    return {
+        (row.warehouse, row.sku, row.manufacturer): {
+            "id": row.id,
+            "price_start_day": row.price_start_day,
+        }
+        for row in rows
+    }
+
+
 def ingest_excel(
     session: Session,
     upload_date: date,
@@ -251,6 +303,14 @@ def ingest_excel(
         parsed_date = date_from_filename(file_name, datetime.now())
         if parsed_date is not None:
             upload_date = parsed_date
+
+    existing_date = session.scalar(
+        select(DailySnapshot.id)
+        .where(DailySnapshot.company == company)
+        .where(DailySnapshot.data_date == upload_date)
+    )
+    if existing_date and mode == "reject":
+        raise IngestConflict("Данные за эту дату уже загружены.")
 
     file_hash = hashlib.sha256(file_bytes).hexdigest()
     existing_hash = session.scalar(
@@ -393,22 +453,72 @@ def ingest_excel(
             record["data_date"] = upload_date
             record["company"] = company
 
-        if warehouses:
+        if mode == "replace":
             session.execute(
                 delete(DailySnapshot)
                 .where(DailySnapshot.company == company)
                 .where(DailySnapshot.data_date == upload_date)
-                .where(DailySnapshot.warehouse.in_(warehouses))
             )
             session.execute(
                 delete(DailyDelta)
                 .where(DailyDelta.company == company)
                 .where(DailyDelta.data_date == upload_date)
-                .where(DailyDelta.warehouse.in_(warehouses))
             )
-
-        session.bulk_insert_mappings(DailySnapshot, snapshot_records)
-        session.bulk_insert_mappings(DailyDelta, delta_records)
+            session.bulk_insert_mappings(DailySnapshot, snapshot_records)
+            session.bulk_insert_mappings(DailyDelta, delta_records)
+        elif mode == "merge":
+            snapshot_existing_map = _load_existing_snapshot_map(
+                session, company, upload_date
+            )
+            delta_existing_map = _load_existing_delta_map(session, company, upload_date)
+            snapshot_updates = []
+            snapshot_inserts = []
+            for record in snapshot_records:
+                key = (record["warehouse"], record["sku"], record["manufacturer"])
+                existing_row = snapshot_existing_map.get(key)
+                if existing_row:
+                    if existing_row["price_start_day"] is not None:
+                        record["price_start_day"] = existing_row["price_start_day"]
+                    record["id"] = existing_row["id"]
+                    snapshot_updates.append(record)
+                else:
+                    snapshot_inserts.append(record)
+            delta_updates = []
+            delta_inserts = []
+            for record in delta_records:
+                key = (record["warehouse"], record["sku"], record["manufacturer"])
+                existing_row = delta_existing_map.get(key)
+                if existing_row:
+                    if existing_row["price_start_day"] is not None:
+                        record["price_start_day"] = existing_row["price_start_day"]
+                    record["id"] = existing_row["id"]
+                    delta_updates.append(record)
+                else:
+                    delta_inserts.append(record)
+            if snapshot_updates:
+                session.bulk_update_mappings(DailySnapshot, snapshot_updates)
+            if snapshot_inserts:
+                session.bulk_insert_mappings(DailySnapshot, snapshot_inserts)
+            if delta_updates:
+                session.bulk_update_mappings(DailyDelta, delta_updates)
+            if delta_inserts:
+                session.bulk_insert_mappings(DailyDelta, delta_inserts)
+        else:
+            if warehouses:
+                session.execute(
+                    delete(DailySnapshot)
+                    .where(DailySnapshot.company == company)
+                    .where(DailySnapshot.data_date == upload_date)
+                    .where(DailySnapshot.warehouse.in_(warehouses))
+                )
+                session.execute(
+                    delete(DailyDelta)
+                    .where(DailyDelta.company == company)
+                    .where(DailyDelta.data_date == upload_date)
+                    .where(DailyDelta.warehouse.in_(warehouses))
+                )
+            session.bulk_insert_mappings(DailySnapshot, snapshot_records)
+            session.bulk_insert_mappings(DailyDelta, delta_records)
         ingest_run.status = "ok"
         session.commit()
 

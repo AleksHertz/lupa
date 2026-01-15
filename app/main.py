@@ -13,6 +13,18 @@ from app.db import get_session
 from app.services.ingest import IngestConflict, IngestError, ingest_excel
 from app.services.query import get_series, get_suggestions, get_top_sales
 
+
+def _normalize_csv_list(values: list[str] | None) -> list[str] | None:
+    if not values:
+        return None
+    expanded: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        parts = [part.strip() for part in value.split(",")]
+        expanded.extend(part for part in parts if part)
+    return expanded or None
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -55,18 +67,19 @@ def upload_file(
 @app.get("/series")
 def series(
     sku: str | None = Query(default=None),
-    warehouse: str | None = Query(default=None),
+    warehouses: list[str] | None = Query(default=None, alias="warehouse"),
     manufacturer: str | None = Query(default=None),
     project_label: str | None = Query(default=None),
-    company: str | None = Query(default=None),
+    company: str | None = Query(default="alliance"),
     date_from: date = Query(...),
     date_to: date = Query(...),
     session: Session = Depends(get_session),
 ):
+    warehouses = _normalize_csv_list(warehouses)
     return get_series(
         session=session,
         sku=sku,
-        warehouse=warehouse,
+        warehouses=warehouses,
         manufacturer=manufacturer,
         project_label=project_label,
         company=company,
@@ -79,22 +92,26 @@ def series(
 def filter_suggestions(
     field: str = Query(..., description="sku, warehouse, manufacturer, name"),
     q: str = Query(""),
+    company: str | None = Query(default="alliance"),
     session: Session = Depends(get_session),
 ):
-    return {"items": get_suggestions(session=session, field=field, query=q)}
+    return {"items": get_suggestions(session=session, field=field, query=q, company=company)}
 
 
 @app.get("/top")
 def top_sales(
     limit: Literal[100, 500, 2000] = Query(100),
-    company: str | None = Query(default=None),
+    company: str | None = Query(default="alliance"),
     warehouses: list[str] | None = Query(default=None, alias="warehouse"),
     sku: str | None = Query(default=None),
     name: str | None = Query(default=None),
     project_label: str | None = Query(default=None),
     group_by_warehouse: bool = Query(default=True),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
     session: Session = Depends(get_session),
 ):
+    warehouses = _normalize_csv_list(warehouses)
     return {
         "items": get_top_sales(
             session=session,
@@ -105,6 +122,8 @@ def top_sales(
             name=name,
             project_label=project_label,
             group_by_warehouse=group_by_warehouse,
+            date_from=date_from,
+            date_to=date_to,
         )
     }
 

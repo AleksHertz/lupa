@@ -13,28 +13,29 @@ SUGGESTION_CACHE = TTLCache(maxsize=512, ttl=300)
 
 def _series_cache_key(
     sku: str | None,
-    warehouse: str | None,
+    warehouses: tuple[str, ...] | None,
     manufacturer: str | None,
     project_label: str | None,
     company: str | None,
     date_from: date,
     date_to: date,
 ) -> tuple[Any, ...]:
-    return (sku, warehouse, manufacturer, project_label, company, date_from, date_to)
+    return (sku, warehouses, manufacturer, project_label, company, date_from, date_to)
 
 
 def get_series(
     session: Session,
     sku: str | None,
-    warehouse: str | None,
+    warehouses: list[str] | None,
     manufacturer: str | None,
     project_label: str | None,
     company: str | None,
     date_from: date,
     date_to: date,
 ) -> dict[str, Any]:
+    warehouses_key = tuple(sorted(warehouses)) if warehouses else None
     cache_key = _series_cache_key(
-        sku, warehouse, manufacturer, project_label, company, date_from, date_to
+        sku, warehouses_key, manufacturer, project_label, company, date_from, date_to
     )
     if cache_key in SERIES_CACHE:
         return SERIES_CACHE[cache_key]
@@ -54,8 +55,8 @@ def get_series(
     )
     if sku:
         stmt = stmt.where(DailyDelta.sku == sku)
-    if warehouse:
-        stmt = stmt.where(DailyDelta.warehouse == warehouse)
+    if warehouses:
+        stmt = stmt.where(DailyDelta.warehouse.in_(warehouses))
     if manufacturer:
         stmt = stmt.where(DailyDelta.manufacturer == manufacturer)
     if project_label:
@@ -92,12 +93,14 @@ def get_series(
     return payload
 
 
-def _suggestion_cache_key(field: str, query: str) -> tuple[str, str]:
-    return (field, query)
+def _suggestion_cache_key(field: str, query: str, company: str | None) -> tuple[str, str, str | None]:
+    return (field, query, company)
 
 
-def get_suggestions(session: Session, field: str, query: str, limit: int = 20) -> list[str]:
-    cache_key = _suggestion_cache_key(field, query)
+def get_suggestions(
+    session: Session, field: str, query: str, company: str | None, limit: int = 20
+) -> list[str]:
+    cache_key = _suggestion_cache_key(field, query, company)
     cacheable_fields = {"sku", "name"}
     if field in cacheable_fields and cache_key in SUGGESTION_CACHE:
         return SUGGESTION_CACHE[cache_key]
@@ -120,6 +123,8 @@ def get_suggestions(session: Session, field: str, query: str, limit: int = 20) -
         .order_by(column)
         .limit(limit)
     )
+    if company:
+        stmt = stmt.where(DailyDelta.company == company)
     rows = session.execute(stmt).scalars().all()
     if field in cacheable_fields:
         SUGGESTION_CACHE[cache_key] = rows
@@ -135,6 +140,8 @@ def get_top_sales(
     name: str | None = None,
     project_label: str | None = None,
     group_by_warehouse: bool = True,
+    date_from: date | None = None,
+    date_to: date | None = None,
 ) -> list[dict[str, Any]]:
     group_by_columns = [
         DailyDelta.sku,
@@ -174,6 +181,10 @@ def get_top_sales(
         stmt = stmt.where(DailyDelta.name.ilike(f"%{name}%"))
     if project_label:
         stmt = stmt.where(DailyDelta.project_label == project_label)
+    if date_from:
+        stmt = stmt.where(DailyDelta.data_date >= date_from)
+    if date_to:
+        stmt = stmt.where(DailyDelta.data_date <= date_to)
 
     rows = session.execute(stmt).mappings().all()
     return [dict(row) for row in rows]

@@ -15,6 +15,17 @@
     </header>
 
     <section class="card">
+      <h2>Компания</h2>
+      <label>
+        Выберите компанию
+        <select id="company-switcher" name="company">
+          <option value="Alliance" selected>Alliance</option>
+          <option value="Vostok">Vostok</option>
+        </select>
+      </label>
+    </section>
+
+    <section class="card">
       <h2>Загрузка Excel</h2>
       <form id="upload-form">
         <label>
@@ -41,10 +52,6 @@
     <section class="card">
       <h2>Фильтры</h2>
       <div class="filters">
-        <label>
-          Компания
-          <input type="text" id="filter-company" placeholder="Company" />
-        </label>
         <label>
           Проект
           <input type="text" id="filter-project" placeholder="Project" />

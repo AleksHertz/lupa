@@ -6,6 +6,7 @@ const topTableBody = document.getElementById("top-table-body");
 const topLimitGroup = document.getElementById("top-limit");
 const datePreset = document.getElementById("filter-date-preset");
 const stockToggle = document.getElementById("toggle-stock");
+const companySwitcher = document.getElementById("company-switcher");
 
 const kpiSold = document.getElementById("kpi-sold");
 const kpiReplenished = document.getElementById("kpi-replenished");
@@ -56,10 +57,14 @@ function getTopLimit() {
   return selected?.value || "100";
 }
 
+function getSelectedCompany() {
+  return companySwitcher?.value || "";
+}
+
 function collectFilters() {
   const sku = document.getElementById("filter-sku").value || "";
   const manufacturer = document.getElementById("filter-manufacturer").value || "";
-  const company = document.getElementById("filter-company")?.value || "";
+  const company = getSelectedCompany();
   const project = document.getElementById("filter-project")?.value || "";
   const dateFrom = document.getElementById("filter-date-from").value;
   const dateTo = document.getElementById("filter-date-to").value;
@@ -79,6 +84,7 @@ function collectFilters() {
 uploadForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const formData = new FormData(uploadForm);
+  formData.set("company", getSelectedCompany());
   setStatus("Загрузка...", false);
   try {
     const response = await fetch("/upload", {
@@ -98,7 +104,12 @@ uploadForm?.addEventListener("submit", async (event) => {
 async function loadWarehouseOptions() {
   if (!warehouseSelect) return;
   try {
-    const response = await fetch("/filters/suggestions?field=warehouse&q=");
+    const params = new URLSearchParams({
+      field: "warehouse",
+      q: "",
+      company: getSelectedCompany(),
+    });
+    const response = await fetch(`/filters/suggestions?${params.toString()}`);
     if (!response.ok) return;
     const payload = await response.json();
     warehouseSelect.innerHTML = "";
@@ -286,6 +297,12 @@ topLimitGroup?.addEventListener("change", () => {
 
 stockToggle?.addEventListener("change", () => {
   fetchSeries();
+});
+
+companySwitcher?.addEventListener("change", () => {
+  loadWarehouseOptions();
+  fetchSeries();
+  fetchTop();
 });
 
 loadWarehouseOptions();

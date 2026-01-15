@@ -9,7 +9,7 @@ class Base(DeclarativeBase):
 
 
 def get_database_url() -> str:
-    url = os.getenv("postgresql://postgres:XkwoRmsBLYLiynUZHPqVOxZGibLSLUJQ@postgres.railway.internal:5432/railway")
+    url = os.getenv("${{Postgres.DATABASE_URL}}")
     if not url:
         raise RuntimeError("DATABASE_URL is not set")
     return url

@@ -59,7 +59,7 @@ function getTopLimit() {
 function collectFilters() {
   const sku = document.getElementById("filter-sku").value || "";
   const manufacturer = document.getElementById("filter-manufacturer").value || "";
-  const source = document.getElementById("filter-source")?.value || "";
+  const company = document.getElementById("filter-company")?.value || "";
   const project = document.getElementById("filter-project")?.value || "";
   const dateFrom = document.getElementById("filter-date-from").value;
   const dateTo = document.getElementById("filter-date-to").value;
@@ -68,7 +68,7 @@ function collectFilters() {
   return {
     sku,
     manufacturer,
-    source,
+    company,
     project,
     warehouse,
     dateFrom,
@@ -117,7 +117,7 @@ async function fetchSeries() {
   const {
     sku,
     manufacturer,
-    source,
+    company,
     project,
     warehouse,
     dateFrom,
@@ -132,7 +132,7 @@ async function fetchSeries() {
     sku,
     warehouse: warehouse.join(","),
     manufacturer,
-    source,
+    company,
     project,
     date_from: dateFrom,
     date_to: dateTo,
@@ -238,7 +238,7 @@ async function fetchTop() {
   const {
     sku,
     manufacturer,
-    source,
+    company,
     project,
     warehouse,
     dateFrom,
@@ -253,7 +253,7 @@ async function fetchTop() {
   const params = new URLSearchParams({
     sku,
     manufacturer,
-    source,
+    company,
     project,
     warehouse: warehouse.join(","),
     date_from: dateFrom,

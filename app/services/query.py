@@ -16,10 +16,11 @@ def _series_cache_key(
     warehouse: str | None,
     manufacturer: str | None,
     project_label: str | None,
+    company: str | None,
     date_from: date,
     date_to: date,
 ) -> tuple[Any, ...]:
-    return (sku, warehouse, manufacturer, project_label, date_from, date_to)
+    return (sku, warehouse, manufacturer, project_label, company, date_from, date_to)
 
 
 def get_series(
@@ -28,26 +29,28 @@ def get_series(
     warehouse: str | None,
     manufacturer: str | None,
     project_label: str | None,
+    company: str | None,
     date_from: date,
     date_to: date,
 ) -> dict[str, Any]:
     cache_key = _series_cache_key(
-        sku, warehouse, manufacturer, project_label, date_from, date_to
+        sku, warehouse, manufacturer, project_label, company, date_from, date_to
     )
     if cache_key in SERIES_CACHE:
         return SERIES_CACHE[cache_key]
 
     stmt = (
         select(
-            DailyDelta.date,
+            DailyDelta.data_date,
             func.sum(DailyDelta.sold_qty).label("sold_qty"),
             func.sum(DailyDelta.replenished_qty).label("replenished_qty"),
             func.avg(DailyDelta.price_start_day).label("price_start_day"),
+            func.sum(DailyDelta.stock_qty).label("stock_qty"),
         )
-        .where(DailyDelta.date >= date_from)
-        .where(DailyDelta.date <= date_to)
-        .group_by(DailyDelta.date)
-        .order_by(DailyDelta.date)
+        .where(DailyDelta.data_date >= date_from)
+        .where(DailyDelta.data_date <= date_to)
+        .group_by(DailyDelta.data_date)
+        .order_by(DailyDelta.data_date)
     )
     if sku:
         stmt = stmt.where(DailyDelta.sku == sku)
@@ -57,12 +60,15 @@ def get_series(
         stmt = stmt.where(DailyDelta.manufacturer == manufacturer)
     if project_label:
         stmt = stmt.where(DailyDelta.project_label == project_label)
+    if company:
+        stmt = stmt.where(DailyDelta.company == company)
 
     rows = session.execute(stmt).all()
-    dates = [row.date.isoformat() for row in rows]
+    dates = [row.data_date.isoformat() for row in rows]
     sold = [float(row.sold_qty or 0) for row in rows]
     replenished = [float(row.replenished_qty or 0) for row in rows]
     prices = [float(row.price_start_day or 0) for row in rows]
+    stock_qty = [float(row.stock_qty or 0) for row in rows]
 
     sold_total = sum(sold)
     replenished_total = sum(replenished)
@@ -74,6 +80,7 @@ def get_series(
         "sold_qty": sold,
         "replenished_qty": replenished,
         "price_start_day": prices,
+        "stock_qty": stock_qty,
         "kpi": {
             "sold_total": sold_total,
             "replenished_total": replenished_total,
@@ -122,7 +129,7 @@ def get_suggestions(session: Session, field: str, query: str, limit: int = 20) -
 def get_top_sales(
     session: Session,
     limit: int,
-    source: str | None = None,
+    company: str | None = None,
     warehouses: list[str] | None = None,
     sku: str | None = None,
     name: str | None = None,
@@ -157,8 +164,8 @@ def get_top_sales(
         .limit(limit)
     )
 
-    if source:
-        stmt = stmt.where(DailyDelta.source == source)
+    if company:
+        stmt = stmt.where(DailyDelta.company == company)
     if warehouses:
         stmt = stmt.where(DailyDelta.warehouse.in_(warehouses))
     if sku:

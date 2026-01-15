@@ -30,7 +30,7 @@ def index(request: Request):
 def upload_file(
     upload_date: date = Form(...),
     mode: Literal["reject", "merge", "replace"] = Form("reject"),
-    source: str | None = Form(None),
+    company: str | None = Form(None),
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
 ):
@@ -39,7 +39,7 @@ def upload_file(
             session=session,
             upload_date=upload_date,
             file_bytes=file.file.read(),
-            source=source,
+            company=company,
             file_name=file.filename,
             mode=mode,
         )
@@ -58,6 +58,7 @@ def series(
     warehouse: str | None = Query(default=None),
     manufacturer: str | None = Query(default=None),
     project_label: str | None = Query(default=None),
+    company: str | None = Query(default=None),
     date_from: date = Query(...),
     date_to: date = Query(...),
     session: Session = Depends(get_session),
@@ -68,6 +69,7 @@ def series(
         warehouse=warehouse,
         manufacturer=manufacturer,
         project_label=project_label,
+        company=company,
         date_from=date_from,
         date_to=date_to,
     )
@@ -85,7 +87,7 @@ def filter_suggestions(
 @app.get("/top")
 def top_sales(
     limit: Literal[100, 500, 2000] = Query(100),
-    source: str | None = Query(default=None),
+    company: str | None = Query(default=None),
     warehouses: list[str] | None = Query(default=None, alias="warehouse"),
     sku: str | None = Query(default=None),
     name: str | None = Query(default=None),
@@ -97,7 +99,7 @@ def top_sales(
         "items": get_top_sales(
             session=session,
             limit=limit,
-            source=source,
+            company=company,
             warehouses=warehouses,
             sku=sku,
             name=name,

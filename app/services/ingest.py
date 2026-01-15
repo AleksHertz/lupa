@@ -34,7 +34,7 @@ COLUMN_ALIASES = {
     "nomenclature": ["nomenclature", "номенклатура", "name", "item"],
     "stock_qty": ["stock_qty", "остаток", "stock"],
     "price": ["price", "цена"],
-    "group": ["group", "группа"],
+    "group_name": ["group", "группа"],
 }
 
 ALLIANCE_COLUMN_ALIASES = {
@@ -44,7 +44,7 @@ ALLIANCE_COLUMN_ALIASES = {
     "артикул производителя": "mfg_sku",
     "производитель": "manufacturer",
     "марка": "brand",
-    "группа": "group",
+    "группа": "group_name",
     "остаток варшавка": "stock_warsawka",
     "остаток люберцы": "stock_lubertsy",
     "остаток кетчерская": "stock_ketcherskaya",
@@ -109,8 +109,8 @@ def _validate_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["nomenclature"] = None
     if "price" not in df.columns:
         df["price"] = None
-    if "group" not in df.columns:
-        df["group"] = None
+    if "group_name" not in df.columns:
+        df["group_name"] = None
     return df
 
 
@@ -123,7 +123,7 @@ def _prepare_alliance_df(df: pd.DataFrame) -> pd.DataFrame:
     for column in ALLIANCE_WAREHOUSE_COLUMNS:
         if column not in df.columns:
             df[column] = 0
-    df["source"] = "альянс"
+    df["company"] = "альянс"
     id_vars = [col for col in df.columns if col not in ALLIANCE_WAREHOUSE_COLUMNS]
     df = df.melt(
         id_vars=id_vars,
@@ -143,15 +143,15 @@ def _prepare_alliance_df(df: pd.DataFrame) -> pd.DataFrame:
         df["manufacturer"] = None
     if "nomenclature" not in df.columns:
         df["nomenclature"] = None
-    if "group" not in df.columns:
-        df["group"] = None
+    if "group_name" not in df.columns:
+        df["group_name"] = None
     return df
 
 
-def _project_label_for_group(group: str | None) -> str | None:
-    if group is None or pd.isna(group):
+def _project_label_for_group(group_name: str | None) -> str | None:
+    if group_name is None or pd.isna(group_name):
         return None
-    normalized = str(group).strip()
+    normalized = str(group_name).strip()
     if normalized in PROJECT_GROUPS["Корея"]:
         return "Корея"
     if normalized in PROJECT_GROUPS["Китай"]:
@@ -172,7 +172,7 @@ def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
             price_start_day=("price", "first"),
             price_end_day=("price", "last"),
             nomenclature=("nomenclature", "first"),
-            group=("group", "first"),
+            group_name=("group_name", "first"),
             project_label=("project_label", "first"),
         )
         .reset_index()
@@ -180,7 +180,12 @@ def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
     return aggregated
 
 
-def _load_prev_snapshot(session: Session, prev_date: date, warehouses: list[str]) -> pd.DataFrame:
+def _load_prev_snapshot(
+    session: Session,
+    company: str,
+    prev_date: date,
+    warehouses: list[str],
+) -> pd.DataFrame:
     if not warehouses:
         return pd.DataFrame(columns=["warehouse", "sku", "manufacturer", "stock_qty"])
     stmt = (
@@ -190,7 +195,8 @@ def _load_prev_snapshot(session: Session, prev_date: date, warehouses: list[str]
             DailySnapshot.manufacturer,
             DailySnapshot.stock_qty,
         )
-        .where(DailySnapshot.date == prev_date)
+        .where(DailySnapshot.company == company)
+        .where(DailySnapshot.data_date == prev_date)
         .where(DailySnapshot.warehouse.in_(warehouses))
     )
     rows = session.execute(stmt).all()
@@ -201,6 +207,7 @@ def _load_prev_snapshot(session: Session, prev_date: date, warehouses: list[str]
 
 def _load_existing_snapshot(
     session: Session,
+    company: str,
     upload_date: date,
     warehouses: list[str],
 ) -> pd.DataFrame:
@@ -215,7 +222,8 @@ def _load_existing_snapshot(
             DailySnapshot.manufacturer,
             DailySnapshot.price_start_day,
         )
-        .where(DailySnapshot.date == upload_date)
+        .where(DailySnapshot.company == company)
+        .where(DailySnapshot.data_date == upload_date)
         .where(DailySnapshot.warehouse.in_(warehouses))
     )
     rows = session.execute(stmt).all()
@@ -232,13 +240,13 @@ def ingest_excel(
     session: Session,
     upload_date: date,
     file_bytes: bytes,
-    source: str | None = None,
+    company: str | None = None,
     file_name: str | None = None,
     mode: Literal["reject", "merge", "replace"] = "reject",
 ) -> dict[str, int]:
-    normalized_source = source.strip().lower() if source else None
-    company = normalized_source or "default"
-    is_alliance = normalized_source == "альянс"
+    normalized_company = company.strip().lower() if company else None
+    company = normalized_company or "default"
+    is_alliance = normalized_company == "альянс"
     if is_alliance and file_name:
         parsed_date = date_from_filename(file_name, datetime.now())
         if parsed_date is not None:
@@ -284,12 +292,12 @@ def ingest_excel(
             df = _prepare_alliance_df(df)
         else:
             df = _validate_columns(df)
-        df["project_label"] = df["group"].map(_project_label_for_group)
+        df["project_label"] = df["group_name"].map(_project_label_for_group)
         aggregated = _aggregate_daily(df)
 
         warehouses = aggregated["warehouse"].dropna().unique().tolist()
 
-        existing = _load_existing_snapshot(session, upload_date, warehouses)
+        existing = _load_existing_snapshot(session, company, upload_date, warehouses)
         if not existing.empty and mode == "reject":
             raise IngestConflict(
                 "Data for this date and warehouse already loaded. "
@@ -311,7 +319,7 @@ def ingest_excel(
                 aggregated = aggregated.drop(columns=["price_start_day_existing"])
 
         prev_date = upload_date - timedelta(days=1)
-        prev_df = _load_prev_snapshot(session, prev_date, warehouses)
+        prev_df = _load_prev_snapshot(session, company, prev_date, warehouses)
         if is_alliance:
             key_columns = ["warehouse", "sku", "manufacturer"]
             prev_keys = prev_df[key_columns] if not prev_df.empty else prev_df
@@ -330,15 +338,15 @@ def ingest_excel(
             how="left",
             suffixes=("", "_prev"),
         )
-        merged["stock_qty_prev"] = (
-            merged["stock_qty_prev"].fillna(0.0).astype(float)
-        )
+        merged["stock_qty_prev"] = merged["stock_qty_prev"].fillna(0).astype(int)
         merged["sold_qty"] = (
             merged["stock_qty_prev"] - merged["stock_qty"]
-        ).clip(lower=0.0)
+        ).clip(lower=0)
         merged["replenished_qty"] = (
             merged["stock_qty"] - merged["stock_qty_prev"]
-        ).clip(lower=0.0)
+        ).clip(lower=0)
+        merged["sold_qty"] = merged["sold_qty"].astype(int)
+        merged["replenished_qty"] = merged["replenished_qty"].astype(int)
 
         snapshot_records = merged[
             [
@@ -346,7 +354,7 @@ def ingest_excel(
                 "sku",
                 "manufacturer",
                 "nomenclature",
-                "group",
+                "group_name",
                 "project_label",
                 "stock_qty",
                 "price_start_day",
@@ -354,7 +362,8 @@ def ingest_excel(
             ]
         ].to_dict("records")
         for record in snapshot_records:
-            record["date"] = upload_date
+            record["data_date"] = upload_date
+            record["company"] = company
 
         delta_records = merged[
             [
@@ -362,8 +371,9 @@ def ingest_excel(
                 "sku",
                 "manufacturer",
                 "nomenclature",
-                "group",
+                "group_name",
                 "project_label",
+                "stock_qty",
                 "sold_qty",
                 "replenished_qty",
                 "price_start_day",
@@ -371,17 +381,20 @@ def ingest_excel(
             ]
         ].to_dict("records")
         for record in delta_records:
-            record["date"] = upload_date
+            record["data_date"] = upload_date
+            record["company"] = company
 
         if warehouses:
             session.execute(
                 delete(DailySnapshot)
-                .where(DailySnapshot.date == upload_date)
+                .where(DailySnapshot.company == company)
+                .where(DailySnapshot.data_date == upload_date)
                 .where(DailySnapshot.warehouse.in_(warehouses))
             )
             session.execute(
                 delete(DailyDelta)
-                .where(DailyDelta.date == upload_date)
+                .where(DailyDelta.company == company)
+                .where(DailyDelta.data_date == upload_date)
                 .where(DailyDelta.warehouse.in_(warehouses))
             )
 

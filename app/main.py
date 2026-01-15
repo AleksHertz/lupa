@@ -1,0 +1,79 @@
+import logging
+from datetime import date
+from typing import Literal
+
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
+from starlette.requests import Request
+
+from app.db import get_session
+from app.services.ingest import IngestError, ingest_excel
+from app.services.query import get_series, get_suggestions
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Stock Delta Analyzer")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
+
+@app.get("/", response_class=HTMLResponse)
+def index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+
+@app.post("/upload")
+def upload_file(
+    upload_date: date = Form(...),
+    mode: Literal["reject", "merge", "replace"] = Form("reject"),
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+):
+    try:
+        payload = ingest_excel(
+            session=session,
+            upload_date=upload_date,
+            file_bytes=file.file.read(),
+            mode=mode,
+        )
+    except IngestError as exc:
+        logger.warning("Upload failed: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return payload
+
+
+@app.get("/series")
+def series(
+    sku: str | None = Query(default=None),
+    warehouse: str | None = Query(default=None),
+    manufacturer: str | None = Query(default=None),
+    date_from: date = Query(...),
+    date_to: date = Query(...),
+    session: Session = Depends(get_session),
+):
+    return get_series(
+        session=session,
+        sku=sku,
+        warehouse=warehouse,
+        manufacturer=manufacturer,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+
+@app.get("/filters/suggestions")
+def filter_suggestions(
+    field: str = Query(..., description="sku, warehouse, manufacturer, nomenclature"),
+    q: str = Query(""),
+    session: Session = Depends(get_session),
+):
+    return {"items": get_suggestions(session=session, field=field, query=q)}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}

@@ -150,30 +150,42 @@ def _coerce_price_column(
     raw_str = raw.fillna("").astype(str).str.strip()
     invalid = raw_str.eq("") | numeric.isna()
     if invalid.any():
-        for idx in raw[invalid].index:
-            _add_validation_error(
-                report,
-                "Цена должна быть числом.",
-                row=idx,
-                column=column,
-            )
+        examples = [
+            {"row": int(idx), "value": raw.loc[idx]}
+            for idx in raw[invalid].index[:5]
+        ]
+        report["errors"].append(
+            {
+                "type": "invalid_price",
+                "message": "Цена должна быть числом.",
+                "column": column,
+                "count": int(invalid.sum()),
+                "examples": examples,
+            }
+        )
     return numeric
 
 
 def _coerce_stock_column(
     df: pd.DataFrame, report: dict[str, Any], column: str
 ) -> pd.Series:
-    numeric = pd.to_numeric(df[column], errors="coerce").fillna(0)
+    raw = df[column]
+    numeric = pd.to_numeric(raw, errors="coerce").fillna(0)
     negative = numeric < 0
     if negative.any():
-        for idx in numeric[negative].index:
-            _add_validation_error(
-                report,
-                "Остаток не может быть отрицательным.",
-                row=idx,
-                column=column,
-            )
-        numeric = numeric.mask(negative, 0)
+        examples = [
+            {"row": int(idx), "value": raw.loc[idx]}
+            for idx in numeric[negative].index[:5]
+        ]
+        report["errors"].append(
+            {
+                "type": "negative_stock",
+                "message": "Остаток не может быть отрицательным.",
+                "column": column,
+                "count": int(negative.sum()),
+                "examples": examples,
+            }
+        )
     return numeric.astype(int)
 
 
@@ -531,7 +543,7 @@ def ingest_excel(
         )
         if validation_report["errors"]:
             raise IngestError(
-                "Файл содержит ошибки. Проверьте отчет.",
+                "Файл содержит ошибки в данных. Проверьте отчет.",
                 report=validation_report,
             )
         if alliance_existing_date and dry_run:

@@ -347,7 +347,7 @@ def validate_ingest_df(
     df = df.rename(columns=normalized_mapping)
     report = _init_validation_report(df, normalized_mapping)
     normalized_company = company.strip().lower() if company else None
-    is_alliance = normalized_company == "альянс"
+    is_alliance = normalized_company in {"alliance", "альянс"} or normalized_company is None
     if is_alliance:
         df = _validate_alliance_df(df, report)
     else:

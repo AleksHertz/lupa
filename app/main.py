@@ -58,6 +58,7 @@ def upload_file(
     upload_date: date = Form(...),
     mode: Literal["reject", "merge", "replace"] = Form("reject"),
     replace: bool = Query(False),
+    dry_run: bool = Query(False),
     company: str | None = Form(None),
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
@@ -72,6 +73,7 @@ def upload_file(
             company=company,
             file_name=file.filename,
             mode=mode,
+            dry_run=dry_run,
         )
     except (NoSuchTableError, OperationalError, ProgrammingError) as exc:
         if _is_missing_schema_error(exc):

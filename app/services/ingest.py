@@ -198,14 +198,20 @@ def _validate_alliance_df(
     missing = required - set(df.columns)
     if missing:
         expected_columns = ", ".join(sorted(required))
-        found_columns = ", ".join(
-            sorted(report["normalized_mapping"].keys() or df.columns)
-        )
+        found_columns = ", ".join(df.columns[:30])
+        error_report = {
+            **report,
+            "expected_columns": sorted(required),
+            "missing_columns": sorted(missing),
+            "found_columns": list(df.columns[:30]),
+            "normalized_mapping": report["normalized_mapping"],
+            "alias_mapping": ALLIANCE_COLUMN_ALIASES,
+        }
         raise IngestError(
             "Не найдены обязательные колонки. "
             f"Ожидались: {expected_columns}. "
             f"Найдены: {found_columns}.",
-            report=report,
+            report=error_report,
         )
     warehouse_columns = list(ALLIANCE_WAREHOUSE_COLUMNS.keys())
     for column in warehouse_columns:
@@ -297,9 +303,17 @@ def _validate_default_df(
     df = df.rename(columns=mapping)
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
+        error_report = {
+            **report,
+            "expected_columns": sorted(REQUIRED_COLUMNS),
+            "missing_columns": sorted(missing),
+            "found_columns": list(df.columns[:30]),
+            "normalized_mapping": report["normalized_mapping"],
+            "alias_mapping": mapping,
+        }
         raise IngestError(
             f"Не найдены обязательные колонки: {', '.join(sorted(missing))}.",
-            report=report,
+            report=error_report,
         )
     has_price = "price" in df.columns
     if "manufacturer" not in df.columns:

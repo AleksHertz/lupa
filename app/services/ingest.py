@@ -241,17 +241,8 @@ def _validate_alliance_df(
         report["rows_dropped"] += int(empty_sku_and_mfg.sum())
         df = df.loc[~empty_sku_and_mfg].copy()
 
-    df.loc[df["mfg_sku"].isna() & df["sku"].notna(), "mfg_sku"] = df["sku"]
-    df.loc[df["sku"].isna() & df["mfg_sku"].notna(), "sku"] = df["mfg_sku"]
-
-    empty_sku = df["sku"].isna()
-    if empty_sku.any():
-        for idx in df[empty_sku].index:
-            _add_validation_error(
-                report, "Артикул обязателен.", row=idx, column="sku"
-            )
-        report["rows_dropped"] += int(empty_sku.sum())
-        df = df.loc[~empty_sku].copy()
+    df.loc[df["mfg_sku"].isna(), "mfg_sku"] = df["sku"]
+    df.loc[df["sku"].isna(), "sku"] = df["mfg_sku"]
 
     df["price"] = _coerce_price_column(df, report, column="price")
     for column in warehouse_columns:

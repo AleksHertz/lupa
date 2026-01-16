@@ -319,6 +319,44 @@ def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
     return aggregated
 
 
+def _qa_top_rows(
+    merged: pd.DataFrame, qty_column: str, limit: int = 5
+) -> list[dict[str, Any]]:
+    if merged.empty or qty_column not in merged.columns:
+        return []
+    subset = merged.loc[merged[qty_column] > 0]
+    if subset.empty:
+        return []
+    columns = [
+        column
+        for column in (
+            "warehouse",
+            "sku",
+            "manufacturer",
+            "stock_qty_prev",
+            "stock_qty",
+            "sold_qty",
+            "replenished_qty",
+        )
+        if column in subset.columns
+    ]
+    return (
+        subset.sort_values(qty_column, ascending=False)
+        .head(limit)[columns]
+        .to_dict("records")
+    )
+
+
+def _build_qa_report(merged: pd.DataFrame) -> dict[str, Any]:
+    return {
+        "rows": len(merged),
+        "sold_rows": int((merged["sold_qty"] > 0).sum()),
+        "replenished_rows": int((merged["replenished_qty"] > 0).sum()),
+        "top_sold": _qa_top_rows(merged, "sold_qty"),
+        "top_replenished": _qa_top_rows(merged, "replenished_qty"),
+    }
+
+
 def _load_prev_snapshot(
     session: Session,
     company: str,
@@ -551,6 +589,71 @@ def ingest_excel(
             merged["sold_qty"] = merged["sold_qty"].astype(int)
             merged["replenished_qty"] = merged["replenished_qty"].astype(int)
 
+        qa_report = _build_qa_report(merged)
+        qa_errors: list[dict[str, Any]] = []
+        negative_mask = (merged["sold_qty"] < 0) | (merged["replenished_qty"] < 0)
+        if negative_mask.any():
+            examples = (
+                merged.loc[negative_mask, ["warehouse", "sku", "manufacturer", "sold_qty", "replenished_qty"]]
+                .head(10)
+                .to_dict("records")
+            )
+            qa_errors.append(
+                {
+                    "type": "negative_quantities",
+                    "count": int(negative_mask.sum()),
+                    "examples": examples,
+                }
+            )
+        simultaneous_mask = (merged["sold_qty"] > 0) & (
+            merged["replenished_qty"] > 0
+        )
+        if simultaneous_mask.any():
+            examples = (
+                merged.loc[
+                    simultaneous_mask,
+                    ["warehouse", "sku", "manufacturer", "sold_qty", "replenished_qty"],
+                ]
+                .head(10)
+                .to_dict("records")
+            )
+            qa_errors.append(
+                {
+                    "type": "simultaneous_sold_replenished",
+                    "count": int(simultaneous_mask.sum()),
+                    "examples": examples,
+                }
+            )
+        if prev_date is not None:
+            balance = (
+                merged.groupby(["warehouse", "sku"], dropna=False)
+                .agg(
+                    prev_stock=("stock_qty_prev", "sum"),
+                    replenished=("replenished_qty", "sum"),
+                    sold=("sold_qty", "sum"),
+                    curr_stock=("stock_qty", "sum"),
+                )
+                .reset_index()
+            )
+            balance["expected_stock"] = (
+                balance["prev_stock"] + balance["replenished"] - balance["sold"]
+            )
+            mismatch = balance[balance["expected_stock"] != balance["curr_stock"]]
+            if not mismatch.empty:
+                examples = mismatch.head(10).to_dict("records")
+                qa_errors.append(
+                    {
+                        "type": "stock_balance_mismatch",
+                        "count": int(len(mismatch)),
+                        "examples": examples,
+                    }
+                )
+        if qa_errors:
+            logger.error("QA validation failed: %s", qa_errors)
+            raise IngestError(
+                "QA validation failed.", report={"qa_report": qa_report, "qa_errors": qa_errors}
+            )
+
         snapshot_records = merged[
             [
                 "warehouse",
@@ -659,6 +762,7 @@ def ingest_excel(
             "snapshots": len(snapshot_records),
             "deltas": len(delta_records),
             "validation_report": validation_report,
+            "qa_report": qa_report,
         }
     except Exception as exc:
         session.rollback()

@@ -37,11 +37,10 @@ uvicorn app.main:app --reload
 1. Создайте новый проект и добавьте Postgres плагин.
 2. Скопируйте `DATABASE_URL` в переменные окружения сервиса.
 3. Залейте репозиторий в Railway — сборка идёт через Dockerfile.
-4. Выполните миграции через Railway Shell:
-
-```bash
-alembic upgrade head
-```
+4. В Railway откройте Settings → Pre-deploy Command и задайте:
+   `python -m alembic upgrade head`
+5. После pre-deploy Railway запускает приложение обычной командой из Dockerfile
+   (через `uvicorn`), отдельный доступ к Shell не требуется.
 
 ## API
 

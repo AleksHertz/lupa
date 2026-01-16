@@ -3,6 +3,7 @@ from datetime import date
 from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -44,8 +45,34 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Stock Delta Analyzer")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    origin = request.headers.get("origin")
+    logger.info("Request URL: %s; Origin: %s", request.url, origin)
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("Unhandled exception for %s", request.url)
+        raise
+    status_code = response.status_code
+    if status_code >= 500:
+        logger.error("Response status %s for %s", status_code, request.url)
+    elif status_code >= 400:
+        logger.warning("Response status %s for %s", status_code, request.url)
+    else:
+        logger.info("Response status %s for %s", status_code, request.url)
+    return response
 
 
 @app.get("/", response_class=HTMLResponse)

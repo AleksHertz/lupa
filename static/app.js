@@ -171,6 +171,11 @@ async function loadWarehouseOptions() {
   const result = await safeFetch(buildUrl(`/filters/suggestions?${params.toString()}`));
   if (!result.ok) {
     warehouseSelect.innerHTML = "";
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Не удалось загрузить список складов";
+    option.disabled = true;
+    warehouseSelect.append(option);
     return;
   }
   warehouseSelect.innerHTML = "";
@@ -207,7 +212,7 @@ async function fetchSeries() {
     date_to: dateTo,
   });
   const result = await safeFetch(buildUrl(`/series?${params.toString()}`));
-  if (!result.ok) {
+  if (!result.response?.ok) {
     return;
   }
   const payload = result.payload;
@@ -333,7 +338,7 @@ async function fetchTop() {
     limit,
   });
   const result = await safeFetch(buildUrl(`/top?${params.toString()}`));
-  if (!result.ok) {
+  if (!result.response?.ok) {
     renderTopTable([]);
     return;
   }

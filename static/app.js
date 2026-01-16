@@ -9,6 +9,9 @@ const stockToggle = document.getElementById("toggle-stock");
 const companySwitcher = document.getElementById("company-switcher");
 const fetchError = document.getElementById("fetch-error");
 
+const BASE_URL = window.BASE_URL ?? "";
+const buildUrl = (path) => `${BASE_URL}${path}`;
+
 const kpiSold = document.getElementById("kpi-sold");
 const kpiReplenished = document.getElementById("kpi-replenished");
 const kpiMaxSold = document.getElementById("kpi-max-sold");
@@ -147,7 +150,7 @@ uploadForm?.addEventListener("submit", async (event) => {
   const formData = new FormData(uploadForm);
   formData.set("company", getSelectedCompany());
   setStatus("Загрузка...", false);
-  const result = await safeFetch("/upload", {
+  const result = await safeFetch(buildUrl("/upload"), {
     method: "POST",
     body: formData,
   });
@@ -165,7 +168,7 @@ async function loadWarehouseOptions() {
     q: "",
     company: getSelectedCompany(),
   });
-  const result = await safeFetch(`/filters/suggestions?${params.toString()}`);
+  const result = await safeFetch(buildUrl(`/filters/suggestions?${params.toString()}`));
   if (!result.ok) {
     warehouseSelect.innerHTML = "";
     return;
@@ -203,7 +206,7 @@ async function fetchSeries() {
     date_from: dateFrom,
     date_to: dateTo,
   });
-  const result = await safeFetch(`/series?${params.toString()}`);
+  const result = await safeFetch(buildUrl(`/series?${params.toString()}`));
   if (!result.ok) {
     return;
   }
@@ -329,7 +332,7 @@ async function fetchTop() {
     date_to: dateTo,
     limit,
   });
-  const result = await safeFetch(`/top?${params.toString()}`);
+  const result = await safeFetch(buildUrl(`/top?${params.toString()}`));
   if (!result.ok) {
     renderTopTable([]);
     return;

@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import NoSuchTableError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import text
 from starlette.requests import Request
 
 from app.db import get_session
@@ -190,6 +191,30 @@ def top_sales(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/health/db")
+def health_db(session: Session = Depends(get_session)):
+    tables_to_check = ("daily_snapshot", "daily_delta", "ingest_run")
+    try:
+        session.execute(text("select 1"))
+        tables = {
+            table: session.execute(
+                text("select to_regclass(:table_name)"),
+                {"table_name": f"public.{table}"},
+            ).scalar()
+            is not None
+            for table in tables_to_check
+        }
+    except (OperationalError, ProgrammingError) as exc:
+        logger.exception("Database health check failed.")
+        return {"status": "error", "detail": str(exc)}
+
+    missing_tables = [table for table, exists in tables.items() if not exists]
+    if missing_tables:
+        return {"status": "error", "detail": f"Missing tables: {', '.join(missing_tables)}"}
+
+    return {"status": "ok", "tables": tables}
 
 
 @app.get("/debug/ingest_state")

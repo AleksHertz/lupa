@@ -114,6 +114,7 @@ def _init_validation_report(
         "rows_dropped": 0,
         "normalized_mapping": normalized_mapping,
         "recognized_columns": [],
+        "warehouse_stats": [],
         "errors": [],
         "warnings": [],
     }
@@ -206,7 +207,7 @@ def _validate_alliance_df(
             f"Найдены: {found_columns}.",
             report=report,
         )
-    warehouse_columns = set(ALLIANCE_WAREHOUSE_COLUMNS.keys())
+    warehouse_columns = list(ALLIANCE_WAREHOUSE_COLUMNS.keys())
     for column in warehouse_columns:
         if column not in df.columns:
             df[column] = 0
@@ -255,19 +256,46 @@ def _validate_alliance_df(
         df[column] = _coerce_stock_column(df, report, column=column)
 
     report["recognized_columns"] = sorted(df.columns)
+    items = len(df)
+    rows_long = items * len(warehouse_columns)
+    logger.info(
+        "Alliance ingest stats: rows_read=%s items=%s rows_long=%s",
+        report["rows_read"],
+        items,
+        rows_long,
+    )
 
     id_vars = [col for col in df.columns if col not in warehouse_columns]
     df = df.melt(
         id_vars=id_vars,
-        value_vars=list(warehouse_columns),
+        value_vars=warehouse_columns,
         var_name="warehouse_key",
         value_name="stock_qty",
     )
     df["warehouse"] = df["warehouse_key"].map(ALLIANCE_WAREHOUSE_COLUMNS)
     df = df.drop(columns=["warehouse_key"])
-    df["nomenclature"] = df["name"]
-    df["group_name"] = df.get("group_name")
-    df["manufacturer"] = df.get("manufacturer")
+    df["company"] = "alliance"
+    df = df[
+        [
+            "company",
+            "warehouse",
+            "sku",
+            "mfg_sku",
+            "name",
+            "manufacturer",
+            "brand",
+            "group_name",
+            "price",
+            "stock_qty",
+        ]
+    ]
+    report["recognized_columns"] = list(df.columns)
+    report["warehouse_stats"] = (
+        df.groupby("warehouse", dropna=False)
+        .agg(rows=("stock_qty", "size"), total_stock=("stock_qty", "sum"))
+        .reset_index()
+        .to_dict("records")
+    )
     return df
 
 
@@ -340,6 +368,8 @@ def _project_label_for_group(group_name: str | None) -> str | None:
 
 def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    if "nomenclature" not in df.columns and "name" in df.columns:
+        df["nomenclature"] = df["name"]
     df["stock_qty"] = pd.to_numeric(df["stock_qty"], errors="coerce").fillna(0).astype(int)
     df["price"] = pd.to_numeric(df["price"], errors="coerce")
     df = df.sort_index()

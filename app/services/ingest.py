@@ -211,9 +211,11 @@ def _validate_alliance_df(
     for column in warehouse_columns:
         if column not in df.columns:
             df[column] = 0
+            warehouse_label = ALLIANCE_WAREHOUSE_COLUMNS[column]
             _add_validation_warning(
                 report,
-                f"Отсутствует складская колонка '{column}', заполнено нулями.",
+                f"Отсутствует складская колонка 'Остаток {warehouse_label}', "
+                "заполнено нулями.",
             )
 
     df["sku"] = _coerce_text_column(df, "sku")

@@ -12,7 +12,7 @@ from starlette.requests import Request
 
 from app.db import get_session
 from app.services.ingest import IngestConflict, IngestError, ingest_excel
-from app.services.query import get_series, get_suggestions, get_top_sales
+from app.services.query import get_ingest_state, get_series, get_suggestions, get_top_sales
 
 
 def _normalize_csv_list(values: list[str] | None) -> list[str] | None:
@@ -163,3 +163,12 @@ def top_sales(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/debug/ingest_state")
+def ingest_state(
+    company: str = Query(...),
+    limit: int = Query(30, ge=1, le=366),
+    session: Session = Depends(get_session),
+):
+    return get_ingest_state(session=session, company=company, limit=limit)

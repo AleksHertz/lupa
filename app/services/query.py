@@ -1,11 +1,11 @@
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from cachetools import TTLCache
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import DailyDelta
+from app.models import DailyDelta, DailySnapshot
 
 SERIES_CACHE = TTLCache(maxsize=256, ttl=300)
 SUGGESTION_CACHE = TTLCache(maxsize=512, ttl=300)
@@ -188,3 +188,85 @@ def get_top_sales(
 
     rows = session.execute(stmt).mappings().all()
     return [dict(row) for row in rows]
+
+
+def get_ingest_state(
+    session: Session, company: str, limit: int = 30
+) -> dict[str, Any]:
+    normalized_company = company.strip().lower()
+    limit = max(limit, 1)
+    snapshot_dates = (
+        session.execute(
+            select(DailySnapshot.data_date)
+            .where(DailySnapshot.company == normalized_company)
+            .distinct()
+            .order_by(DailySnapshot.data_date.desc())
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+
+    if snapshot_dates:
+        snapshot_counts = dict(
+            session.execute(
+                select(
+                    DailySnapshot.data_date,
+                    func.count().label("snapshot_rows"),
+                )
+                .where(DailySnapshot.company == normalized_company)
+                .where(DailySnapshot.data_date.in_(snapshot_dates))
+                .group_by(DailySnapshot.data_date)
+            ).all()
+        )
+        delta_counts = dict(
+            session.execute(
+                select(
+                    DailyDelta.data_date,
+                    func.count().label("delta_rows"),
+                )
+                .where(DailyDelta.company == normalized_company)
+                .where(DailyDelta.data_date.in_(snapshot_dates))
+                .group_by(DailyDelta.data_date)
+            ).all()
+        )
+    else:
+        snapshot_counts = {}
+        delta_counts = {}
+
+    max_date = session.scalar(
+        select(func.max(DailySnapshot.data_date)).where(
+            DailySnapshot.company == normalized_company
+        )
+    )
+    today = date.today()
+    if max_date is None:
+        next_upload_date = today
+    elif max_date >= today:
+        next_upload_date = max_date + timedelta(days=1)
+    else:
+        next_upload_date = today
+
+    prev_date = session.scalar(
+        select(func.max(DailySnapshot.data_date))
+        .where(DailySnapshot.company == normalized_company)
+        .where(DailySnapshot.data_date < next_upload_date)
+    )
+
+    items = []
+    for snapshot_date in snapshot_dates:
+        items.append(
+            {
+                "date": snapshot_date.isoformat(),
+                "snapshot_rows": int(snapshot_counts.get(snapshot_date, 0)),
+                "delta_rows": int(delta_counts.get(snapshot_date, 0)),
+            }
+        )
+
+    return {
+        "company": normalized_company,
+        "limit": limit,
+        "dates": items,
+        "next_upload_date": next_upload_date.isoformat() if next_upload_date else None,
+        "prev_date": prev_date.isoformat() if prev_date else None,
+    }

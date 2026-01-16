@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFi
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.exc import NoSuchTableError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
@@ -24,6 +25,20 @@ def _normalize_csv_list(values: list[str] | None) -> list[str] | None:
         parts = [part.strip() for part in value.split(",")]
         expanded.extend(part for part in parts if part)
     return expanded or None
+
+
+def _is_missing_schema_error(exc: Exception) -> bool:
+    if isinstance(exc, NoSuchTableError):
+        return True
+    orig = getattr(exc, "orig", None)
+    if orig is not None:
+        pgcode = getattr(orig, "pgcode", None)
+        if pgcode == "42P01":
+            return True
+        if "undefined_table" in str(orig):
+            return True
+    message = str(exc).lower()
+    return "no such table" in message or "relation" in message and "does not exist" in message
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -55,6 +70,14 @@ def upload_file(
             file_name=file.filename,
             mode=mode,
         )
+    except (NoSuchTableError, OperationalError, ProgrammingError) as exc:
+        if _is_missing_schema_error(exc):
+            logger.exception("Database schema not migrated.")
+            raise HTTPException(
+                status_code=503,
+                detail="DB schema not migrated",
+            ) from exc
+        raise
     except IngestConflict as exc:
         logger.warning("Upload conflict: %s", exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc

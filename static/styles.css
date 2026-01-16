@@ -76,6 +76,17 @@ button:hover {
   font-size: 14px;
 }
 
+.fetch-error {
+  display: none;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #b42318;
+  font-size: 14px;
+  white-space: pre-wrap;
+}
+
 .chart {
   width: 100%;
   min-height: 360px;

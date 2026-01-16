@@ -7,6 +7,7 @@ const topLimitGroup = document.getElementById("top-limit");
 const datePreset = document.getElementById("filter-date-preset");
 const stockToggle = document.getElementById("toggle-stock");
 const companySwitcher = document.getElementById("company-switcher");
+const fetchError = document.getElementById("fetch-error");
 
 const kpiSold = document.getElementById("kpi-sold");
 const kpiReplenished = document.getElementById("kpi-replenished");
@@ -16,6 +17,66 @@ const kpiMaxRepl = document.getElementById("kpi-max-repl");
 function setStatus(message, isError = false) {
   uploadStatus.textContent = message;
   uploadStatus.style.color = isError ? "#b42318" : "#027a48";
+}
+
+function setFetchError({ url, status, body }) {
+  if (!fetchError) return;
+  const preview = body ? body.slice(0, 300) : "—";
+  fetchError.textContent = `Ошибка запроса.\nURL: ${url}\nСтатус: ${status ?? "—"}\nОтвет: ${preview}`;
+  fetchError.style.display = "block";
+}
+
+function clearFetchError() {
+  if (!fetchError) return;
+  fetchError.textContent = "";
+  fetchError.style.display = "none";
+}
+
+async function safeFetch(url, options, expectJson = true) {
+  console.log("Fetch", url);
+  clearFetchError();
+  let response;
+  try {
+    response = await fetch(url, options);
+  } catch (error) {
+    console.error("Fetch failed", { url, error });
+    setFetchError({ url, status: "network", body: error.message });
+    return { ok: false, error };
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  console.log("Fetch response", {
+    url,
+    status: response.status,
+    contentType,
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    console.error("Fetch failed", {
+      url,
+      status: response.status,
+      contentType,
+      body,
+    });
+    setFetchError({ url, status: response.status, body });
+    return { ok: false, response, body };
+  }
+
+  if (expectJson && !contentType.includes("application/json")) {
+    const body = await response.text();
+    console.error("Fetch failed", {
+      url,
+      status: response.status,
+      contentType,
+      body,
+    });
+    setFetchError({ url, status: response.status, body });
+    return { ok: false, response, body };
+  }
+
+  const payload = expectJson ? await response.json() : null;
+  return { ok: true, response, payload };
 }
 
 function formatDate(value) {
@@ -86,42 +147,36 @@ uploadForm?.addEventListener("submit", async (event) => {
   const formData = new FormData(uploadForm);
   formData.set("company", getSelectedCompany());
   setStatus("Загрузка...", false);
-  try {
-    const response = await fetch("/upload", {
-      method: "POST",
-      body: formData,
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.detail || "Ошибка загрузки");
-    }
-    setStatus(`Готово. Снимков: ${payload.snapshots}, дельт: ${payload.deltas}.`);
-  } catch (error) {
-    setStatus(error.message, true);
+  const result = await safeFetch("/upload", {
+    method: "POST",
+    body: formData,
+  });
+  if (!result.ok) {
+    setStatus("Ошибка загрузки. Проверьте блок ошибок.", true);
+    return;
   }
+  setStatus(`Готово. Снимков: ${result.payload.snapshots}, дельт: ${result.payload.deltas}.`);
 });
 
 async function loadWarehouseOptions() {
   if (!warehouseSelect) return;
-  try {
-    const params = new URLSearchParams({
-      field: "warehouse",
-      q: "",
-      company: getSelectedCompany(),
-    });
-    const response = await fetch(`/filters/suggestions?${params.toString()}`);
-    if (!response.ok) return;
-    const payload = await response.json();
+  const params = new URLSearchParams({
+    field: "warehouse",
+    q: "",
+    company: getSelectedCompany(),
+  });
+  const result = await safeFetch(`/filters/suggestions?${params.toString()}`);
+  if (!result.ok) {
     warehouseSelect.innerHTML = "";
-    payload.items.forEach((item) => {
-      const option = document.createElement("option");
-      option.value = item;
-      option.textContent = item;
-      warehouseSelect.append(option);
-    });
-  } catch (error) {
-    warehouseSelect.innerHTML = "";
+    return;
   }
+  warehouseSelect.innerHTML = "";
+  result.payload.items.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item;
+    option.textContent = item;
+    warehouseSelect.append(option);
+  });
 }
 
 async function fetchSeries() {
@@ -148,8 +203,11 @@ async function fetchSeries() {
     date_from: dateFrom,
     date_to: dateTo,
   });
-  const response = await fetch(`/series?${params.toString()}`);
-  const payload = await response.json();
+  const result = await safeFetch(`/series?${params.toString()}`);
+  if (!result.ok) {
+    return;
+  }
+  const payload = result.payload;
 
   const soldTrace = {
     x: payload.dates,
@@ -271,13 +329,12 @@ async function fetchTop() {
     date_to: dateTo,
     limit,
   });
-  const response = await fetch(`/top?${params.toString()}`);
-  if (!response.ok) {
+  const result = await safeFetch(`/top?${params.toString()}`);
+  if (!result.ok) {
     renderTopTable([]);
     return;
   }
-  const payload = await response.json();
-  const items = Array.isArray(payload) ? payload : payload.items || [];
+  const items = Array.isArray(result.payload) ? result.payload : result.payload.items || [];
   renderTopTable(items);
 }
 

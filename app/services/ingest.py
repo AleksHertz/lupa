@@ -181,23 +181,27 @@ def _validate_alliance_df(
     df: pd.DataFrame, report: dict[str, Any]
 ) -> pd.DataFrame:
     df = df.rename(columns=ALLIANCE_COLUMN_ALIASES)
-    required = {"sku", "name", "price", "group_name"}
+    required = {"sku", "name", "price", "manufacturer", "brand", "group_name"}
     missing = required - set(df.columns)
     if missing:
+        expected_columns = ", ".join(sorted(required))
+        found_columns = ", ".join(
+            sorted(report["normalized_mapping"].keys() or df.columns)
+        )
         raise IngestError(
-            f"Не найдены обязательные колонки: {', '.join(sorted(missing))}.",
+            "Не найдены обязательные колонки. "
+            f"Ожидались: {expected_columns}. "
+            f"Найдены: {found_columns}.",
             report=report,
         )
     warehouse_columns = set(ALLIANCE_WAREHOUSE_COLUMNS.keys())
-    present_warehouses = warehouse_columns & set(df.columns)
-    if not present_warehouses:
-        raise IngestError(
-            "Не найдены обязательные колонки: требуется хотя бы одна колонка остатков по складу.",
-            report=report,
-        )
     for column in warehouse_columns:
         if column not in df.columns:
             df[column] = 0
+            _add_validation_warning(
+                report,
+                f"Отсутствует складская колонка '{column}', заполнено нулями.",
+            )
 
     df["sku"] = _coerce_text_column(df, "sku")
     df["name"] = _coerce_text_column(df, "name")

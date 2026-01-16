@@ -6,7 +6,7 @@
 
 **Таблицы**
 - `daily_snapshot`: снимок остатков на день (по ключу `date + warehouse + sku + manufacturer`).
-- `daily_delta`: дневные изменения (sold/replenished) + цена старта/конца дня.
+- `daily_delta`: дневные изменения (sold/replenished) + цена за день.
 
 **Индексы**
 - `date + warehouse + sku` для быстрых диапазонных запросов.
@@ -15,7 +15,7 @@
 **Поток загрузки**
 1. Загрузка Excel (`/upload`).
 2. Проверка колонок и нормализация.
-3. Аггрегация внутри дня (первая цена/последняя цена, последний остаток).
+3. Аггрегация внутри дня (последняя цена, последний остаток).
 4. Сравнение только с предыдущим днём.
 5. Запись `daily_snapshot` и `daily_delta`.
 
@@ -47,5 +47,5 @@ uvicorn app.main:app --reload
 - `POST /upload` — загрузка Excel.
   - `upload_date` (YYYY-MM-DD)
   - `mode`: `reject` (по умолчанию), `merge` или `replace`
-- `GET /series?sku=&warehouse=&manufacturer=&date_from=&date_to=` — временной ряд
+- `GET /series?sku=&warehouse=&manufacturer=&date_from=&date_to=` — временной ряд (поле `price` вместо `price_start_day`)
 - `GET /filters/suggestions?field=sku&q=` — подсказки для фильтров

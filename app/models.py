@@ -30,8 +30,7 @@ class DailySnapshot(Base):
     group_name: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     project_label: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     stock_qty: Mapped[int] = mapped_column(Integer)
-    price_start_day: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
-    price_end_day: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
@@ -71,8 +70,7 @@ class DailyDelta(Base):
     stock_qty: Mapped[int] = mapped_column(Integer)
     sold_qty: Mapped[int] = mapped_column(Integer)
     replenished_qty: Mapped[int] = mapped_column(Integer)
-    price_start_day: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
-    price_end_day: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (

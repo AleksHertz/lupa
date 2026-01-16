@@ -169,8 +169,8 @@ async function fetchSeries() {
 
   const priceTrace = {
     x: payload.dates,
-    y: payload.price_start_day,
-    name: "Цена (старт дня)",
+    y: payload.price,
+    name: "Цена",
     yaxis: "y2",
     type: "scatter",
     mode: "lines+markers",

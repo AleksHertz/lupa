@@ -245,9 +245,6 @@ def _validate_alliance_df(
     df.loc[df["sku"].isna(), "sku"] = df["mfg_sku"]
 
     df["price"] = _coerce_price_column(df, report, column="price")
-    for column in warehouse_columns:
-        df[column] = _coerce_stock_column(df, report, column=column)
-
     report["recognized_columns"] = sorted(df.columns)
     items = len(df)
     rows_long = items * len(warehouse_columns)
@@ -265,6 +262,7 @@ def _validate_alliance_df(
         var_name="warehouse_key",
         value_name="stock_qty",
     )
+    df["stock_qty"] = _coerce_stock_column(df, report, column="stock_qty")
     df["warehouse"] = df["warehouse_key"].map(ALLIANCE_WAREHOUSE_COLUMNS)
     df = df.drop(columns=["warehouse_key"])
     df["company"] = "alliance"

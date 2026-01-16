@@ -268,6 +268,7 @@ def _validate_alliance_df(
         var_name="warehouse_key",
         value_name="stock_qty",
     )
+    logger.info("Wide->Long produced rows: %s", len(df))
     df["stock_qty"] = _coerce_stock_column(df, report, column="stock_qty")
     df["warehouse"] = df["warehouse_key"].map(ALLIANCE_WAREHOUSE_COLUMNS)
     df = df.drop(columns=["warehouse_key"])
@@ -575,6 +576,10 @@ def ingest_excel(
         )
         df, validation_report = validate_ingest_df(
             df=df, file_name=file_name, company=company
+        )
+        logger.info(
+            "Recognized columns mapping: %s",
+            validation_report["normalized_mapping"],
         )
         if validation_report["errors"]:
             raise IngestError(

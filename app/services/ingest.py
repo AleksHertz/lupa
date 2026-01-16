@@ -212,6 +212,23 @@ def _validate_alliance_df(
         else:
             df[optional] = None
 
+    sku_missing = df["sku"].isna()
+    mfg_missing = df["mfg_sku"].isna()
+    empty_sku_and_mfg = sku_missing & mfg_missing
+    if empty_sku_and_mfg.any():
+        for idx in df[empty_sku_and_mfg].index:
+            _add_validation_error(
+                report,
+                "Пустые sku/mfg_sku.",
+                row=idx,
+                column="sku",
+            )
+        report["rows_dropped"] += int(empty_sku_and_mfg.sum())
+        df = df.loc[~empty_sku_and_mfg].copy()
+
+    df.loc[df["mfg_sku"].isna() & df["sku"].notna(), "mfg_sku"] = df["sku"]
+    df.loc[df["sku"].isna() & df["mfg_sku"].notna(), "sku"] = df["mfg_sku"]
+
     empty_sku = df["sku"].isna()
     if empty_sku.any():
         for idx in df[empty_sku].index:

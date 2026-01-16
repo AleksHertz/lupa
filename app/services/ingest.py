@@ -149,7 +149,7 @@ def _coerce_price_column(
         for idx in raw[invalid].index:
             _add_validation_error(
                 report,
-                "Price value is not numeric.",
+                "Цена должна быть числом.",
                 row=idx,
                 column=column,
             )
@@ -165,7 +165,7 @@ def _coerce_stock_column(
         for idx in numeric[negative].index:
             _add_validation_error(
                 report,
-                "Stock quantity cannot be negative.",
+                "Остаток не может быть отрицательным.",
                 row=idx,
                 column=column,
             )
@@ -181,13 +181,14 @@ def _validate_alliance_df(
     missing = required - set(df.columns)
     if missing:
         raise IngestError(
-            f"Missing required columns: {', '.join(sorted(missing))}", report=report
+            f"Не найдены обязательные колонки: {', '.join(sorted(missing))}.",
+            report=report,
         )
     warehouse_columns = set(ALLIANCE_WAREHOUSE_COLUMNS.keys())
     present_warehouses = warehouse_columns & set(df.columns)
     if not present_warehouses:
         raise IngestError(
-            "Missing required columns: at least one warehouse stock column.",
+            "Не найдены обязательные колонки: требуется хотя бы одна колонка остатков по складу.",
             report=report,
         )
     for column in warehouse_columns:
@@ -207,7 +208,7 @@ def _validate_alliance_df(
     if empty_sku.any():
         for idx in df[empty_sku].index:
             _add_validation_error(
-                report, "SKU is required.", row=idx, column="sku"
+                report, "Артикул обязателен.", row=idx, column="sku"
             )
         report["rows_dropped"] += int(empty_sku.sum())
         df = df.loc[~empty_sku].copy()
@@ -241,7 +242,8 @@ def _validate_default_df(
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
         raise IngestError(
-            f"Missing required columns: {', '.join(sorted(missing))}", report=report
+            f"Не найдены обязательные колонки: {', '.join(sorted(missing))}.",
+            report=report,
         )
     has_price = "price" in df.columns
     if "manufacturer" not in df.columns:
@@ -260,7 +262,7 @@ def _validate_default_df(
     if empty_sku.any():
         for idx in df[empty_sku].index:
             _add_validation_error(
-                report, "SKU is required.", row=idx, column="sku"
+                report, "Артикул обязателен.", row=idx, column="sku"
             )
         report["rows_dropped"] += int(empty_sku.sum())
         df = df.loc[~empty_sku].copy()
@@ -470,6 +472,7 @@ def ingest_excel(
     normalized_company = company.strip().lower() if company else None
     company = normalized_company or "default"
     is_alliance = normalized_company == "альянс"
+    is_alliance_company = normalized_company in {"alliance", "альянс"}
     if is_alliance and file_name:
         parsed_date = date_from_filename(file_name, datetime.now())
         if parsed_date is not None:
@@ -479,6 +482,17 @@ def ingest_excel(
     ingest_run_id: int | None = None
     ingest_run_payload: dict[str, object] | None = None
     try:
+        if is_alliance_company and mode != "replace":
+            existing_date = session.scalar(
+                select(DailySnapshot.id)
+                .where(DailySnapshot.company == company)
+                .where(DailySnapshot.data_date == upload_date)
+            )
+            if existing_date:
+                raise IngestConflict(
+                    "Данные за эту дату уже загружены для компании Alliance. "
+                    "Передайте replace=true, чтобы перезаписать."
+                )
         with session.begin():
             existing_hash = session.scalar(
                 select(IngestRun.id)
@@ -486,7 +500,7 @@ def ingest_excel(
                 .where(IngestRun.file_hash == file_hash)
             )
             if existing_hash:
-                raise IngestConflict("This file has already been uploaded.")
+                raise IngestConflict("Этот файл уже был загружен ранее.")
 
             ingest_run_payload = {
                 "company": company,
@@ -518,7 +532,7 @@ def ingest_excel(
                 .where(IngestRun.id != ingest_run.id)
             )
             if existing_date:
-                ingest_run.error_message = "Данные за эту дату уже загружены."
+                ingest_run.error_message = "Загрузка за эту дату уже выполнялась."
                 raise IngestConflict(ingest_run.error_message)
 
             logger.info("Starting ingest for %s", upload_date)
@@ -530,7 +544,10 @@ def ingest_excel(
                 df=df, file_name=file_name, company=company
             )
             if validation_report["errors"]:
-                raise IngestError("Validation failed.", report=validation_report)
+                raise IngestError(
+                    "Файл содержит ошибки. Проверьте отчет.",
+                    report=validation_report,
+                )
             df["project_label"] = df["group_name"].map(_project_label_for_group)
             aggregated = _aggregate_daily(df)
 
@@ -539,8 +556,8 @@ def ingest_excel(
             existing = _load_existing_snapshot(session, company, upload_date, warehouses)
             if not existing.empty and mode == "reject":
                 raise IngestConflict(
-                    "Data for this date and warehouse already loaded. "
-                    "Use mode=merge to update or mode=replace to overwrite."
+                    "Данные за эту дату и склад уже загружены. "
+                    "Используйте mode=merge для обновления или mode=replace для перезаписи."
                 )
 
             if not existing.empty and mode == "merge":
@@ -673,7 +690,7 @@ def ingest_excel(
             if qa_errors:
                 logger.error("QA validation failed: %s", qa_errors)
                 raise IngestError(
-                    "QA validation failed.",
+                    "Проверка качества данных не пройдена.",
                     report={"qa_report": qa_report, "qa_errors": qa_errors},
                 )
 

@@ -57,10 +57,13 @@ def index(request: Request):
 def upload_file(
     upload_date: date = Form(...),
     mode: Literal["reject", "merge", "replace"] = Form("reject"),
+    replace: bool = Query(False),
     company: str | None = Form(None),
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
 ):
+    if replace:
+        mode = "replace"
     try:
         payload = ingest_excel(
             session=session,

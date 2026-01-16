@@ -3,7 +3,7 @@ import io
 import logging
 import re
 from datetime import date, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
 import pandas as pd
 from sqlalchemy import delete, func, select
@@ -60,7 +60,9 @@ ALLIANCE_WAREHOUSE_COLUMNS = {
 
 
 class IngestError(Exception):
-    pass
+    def __init__(self, message: str, report: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.report = report
 
 
 class IngestConflict(IngestError):
@@ -86,9 +88,16 @@ def date_from_filename(name: str, now: datetime) -> date | None:
 
 
 def _normalize_columns(columns: list[str]) -> dict[str, str]:
+    return {col: _normalize_header(col) for col in columns}
+
+
+def _apply_column_aliases(
+    normalized_columns: list[str],
+    aliases: dict[str, list[str]],
+) -> dict[str, str]:
     mapping: dict[str, str] = {}
-    lowered = {_normalize_header(col): col for col in columns}
-    for target, variants in COLUMN_ALIASES.items():
+    lowered = {_normalize_header(col): col for col in normalized_columns}
+    for target, variants in aliases.items():
         for variant in variants:
             key = _normalize_header(variant)
             if key in lowered:
@@ -97,12 +106,144 @@ def _normalize_columns(columns: list[str]) -> dict[str, str]:
     return mapping
 
 
-def _validate_columns(df: pd.DataFrame) -> pd.DataFrame:
-    mapping = _normalize_columns(df.columns.tolist())
+def _init_validation_report(
+    df: pd.DataFrame, normalized_mapping: dict[str, str]
+) -> dict[str, Any]:
+    return {
+        "rows_read": len(df),
+        "rows_dropped": 0,
+        "normalized_mapping": normalized_mapping,
+        "recognized_columns": [],
+        "errors": [],
+        "warnings": [],
+    }
+
+
+def _add_validation_error(
+    report: dict[str, Any],
+    message: str,
+    row: int | None = None,
+    column: str | None = None,
+) -> None:
+    entry: dict[str, Any] = {"message": message}
+    if row is not None:
+        entry["row"] = int(row)
+    if column is not None:
+        entry["column"] = column
+    report["errors"].append(entry)
+
+
+def _coerce_text_column(df: pd.DataFrame, column: str) -> pd.Series:
+    series = df[column].fillna("").astype(str).str.strip()
+    return series.replace("", None)
+
+
+def _coerce_price_column(
+    df: pd.DataFrame, report: dict[str, Any], column: str = "price"
+) -> pd.Series:
+    raw = df[column]
+    numeric = pd.to_numeric(raw, errors="coerce")
+    raw_str = raw.fillna("").astype(str).str.strip()
+    invalid = raw_str.eq("") | numeric.isna()
+    if invalid.any():
+        for idx in raw[invalid].index:
+            _add_validation_error(
+                report,
+                "Price value is not numeric.",
+                row=idx,
+                column=column,
+            )
+    return numeric
+
+
+def _coerce_stock_column(
+    df: pd.DataFrame, report: dict[str, Any], column: str
+) -> pd.Series:
+    numeric = pd.to_numeric(df[column], errors="coerce").fillna(0)
+    negative = numeric < 0
+    if negative.any():
+        for idx in numeric[negative].index:
+            _add_validation_error(
+                report,
+                "Stock quantity cannot be negative.",
+                row=idx,
+                column=column,
+            )
+        numeric = numeric.mask(negative, 0)
+    return numeric.astype(int)
+
+
+def _validate_alliance_df(
+    df: pd.DataFrame, report: dict[str, Any]
+) -> pd.DataFrame:
+    df = df.rename(columns=ALLIANCE_COLUMN_ALIASES)
+    required = {"sku", "name", "price", "group_name"}
+    missing = required - set(df.columns)
+    if missing:
+        raise IngestError(
+            f"Missing required columns: {', '.join(sorted(missing))}", report=report
+        )
+    warehouse_columns = set(ALLIANCE_WAREHOUSE_COLUMNS.keys())
+    present_warehouses = warehouse_columns & set(df.columns)
+    if not present_warehouses:
+        raise IngestError(
+            "Missing required columns: at least one warehouse stock column.",
+            report=report,
+        )
+    for column in warehouse_columns:
+        if column not in df.columns:
+            df[column] = 0
+
+    df["sku"] = _coerce_text_column(df, "sku")
+    df["name"] = _coerce_text_column(df, "name")
+    df["group_name"] = _coerce_text_column(df, "group_name")
+    for optional in ("manufacturer", "brand", "mfg_sku"):
+        if optional in df.columns:
+            df[optional] = _coerce_text_column(df, optional)
+        else:
+            df[optional] = None
+
+    empty_sku = df["sku"].isna()
+    if empty_sku.any():
+        for idx in df[empty_sku].index:
+            _add_validation_error(
+                report, "SKU is required.", row=idx, column="sku"
+            )
+        report["rows_dropped"] += int(empty_sku.sum())
+        df = df.loc[~empty_sku].copy()
+
+    df["price"] = _coerce_price_column(df, report, column="price")
+    for column in warehouse_columns:
+        df[column] = _coerce_stock_column(df, report, column=column)
+
+    report["recognized_columns"] = sorted(df.columns)
+
+    id_vars = [col for col in df.columns if col not in warehouse_columns]
+    df = df.melt(
+        id_vars=id_vars,
+        value_vars=list(warehouse_columns),
+        var_name="warehouse_key",
+        value_name="stock_qty",
+    )
+    df["warehouse"] = df["warehouse_key"].map(ALLIANCE_WAREHOUSE_COLUMNS)
+    df = df.drop(columns=["warehouse_key"])
+    df["nomenclature"] = df["name"]
+    df["group_name"] = df.get("group_name")
+    df["manufacturer"] = df.get("manufacturer")
+    return df
+
+
+def _validate_default_df(
+    df: pd.DataFrame, report: dict[str, Any]
+) -> pd.DataFrame:
+    mapping = _apply_column_aliases(df.columns.tolist(), COLUMN_ALIASES)
     df = df.rename(columns=mapping)
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
-        raise IngestError(f"Missing required columns: {', '.join(sorted(missing))}")
+        raise IngestError(
+            f"Missing required columns: {', '.join(sorted(missing))}", report=report
+        )
+    has_price = "price" in df.columns
     if "manufacturer" not in df.columns:
         df["manufacturer"] = None
     if "nomenclature" not in df.columns:
@@ -111,41 +252,40 @@ def _validate_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["price"] = None
     if "group_name" not in df.columns:
         df["group_name"] = None
+
+    df["sku"] = _coerce_text_column(df, "sku")
+    for column in ("manufacturer", "nomenclature", "group_name"):
+        df[column] = _coerce_text_column(df, column)
+    empty_sku = df["sku"].isna()
+    if empty_sku.any():
+        for idx in df[empty_sku].index:
+            _add_validation_error(
+                report, "SKU is required.", row=idx, column="sku"
+            )
+        report["rows_dropped"] += int(empty_sku.sum())
+        df = df.loc[~empty_sku].copy()
+
+    df["stock_qty"] = _coerce_stock_column(df, report, column="stock_qty")
+    if has_price:
+        df["price"] = _coerce_price_column(df, report, column="price")
+
+    report["recognized_columns"] = sorted(df.columns)
     return df
 
 
-def _prepare_alliance_df(df: pd.DataFrame) -> pd.DataFrame:
-    normalized_columns = {col: _normalize_header(col) for col in df.columns}
-    df = df.rename(columns=normalized_columns)
-    df = df.rename(columns=ALLIANCE_COLUMN_ALIASES)
-    if "sku" not in df.columns:
-        raise IngestError("Missing required columns: sku")
-    for column in ALLIANCE_WAREHOUSE_COLUMNS:
-        if column not in df.columns:
-            df[column] = 0
-    df["company"] = "альянс"
-    id_vars = [col for col in df.columns if col not in ALLIANCE_WAREHOUSE_COLUMNS]
-    df = df.melt(
-        id_vars=id_vars,
-        value_vars=list(ALLIANCE_WAREHOUSE_COLUMNS.keys()),
-        var_name="warehouse_key",
-        value_name="stock_qty",
-    )
-    df["warehouse"] = df["warehouse_key"].map(ALLIANCE_WAREHOUSE_COLUMNS)
-    df = df.drop(columns=["warehouse_key"])
-    df["stock_qty"] = pd.to_numeric(df["stock_qty"], errors="coerce").fillna(0).astype(int)
-    if "price" in df.columns:
-        df["price"] = pd.to_numeric(df["price"], errors="coerce")
+def validate_ingest_df(
+    df: pd.DataFrame, file_name: str | None, company: str | None
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    normalized_mapping = _normalize_columns(df.columns.tolist())
+    df = df.rename(columns=normalized_mapping)
+    report = _init_validation_report(df, normalized_mapping)
+    normalized_company = company.strip().lower() if company else None
+    is_alliance = normalized_company == "альянс"
+    if is_alliance:
+        df = _validate_alliance_df(df, report)
     else:
-        df["price"] = None
-    df["nomenclature"] = df.get("name")
-    if "manufacturer" not in df.columns:
-        df["manufacturer"] = None
-    if "nomenclature" not in df.columns:
-        df["nomenclature"] = None
-    if "group_name" not in df.columns:
-        df["group_name"] = None
-    return df
+        df = _validate_default_df(df, report)
+    return df, report
 
 
 def _project_label_for_group(group_name: str | None) -> str | None:
@@ -295,7 +435,7 @@ def ingest_excel(
     company: str | None = None,
     file_name: str | None = None,
     mode: Literal["reject", "merge", "replace"] = "reject",
-) -> dict[str, int]:
+) -> dict[str, object]:
     normalized_company = company.strip().lower() if company else None
     company = normalized_company or "default"
     is_alliance = normalized_company == "альянс"
@@ -348,10 +488,11 @@ def ingest_excel(
             io.BytesIO(file_bytes),
             engine="openpyxl",
         )
-        if is_alliance:
-            df = _prepare_alliance_df(df)
-        else:
-            df = _validate_columns(df)
+        df, validation_report = validate_ingest_df(
+            df=df, file_name=file_name, company=company
+        )
+        if validation_report["errors"]:
+            raise IngestError("Validation failed.", report=validation_report)
         df["project_label"] = df["group_name"].map(_project_label_for_group)
         aggregated = _aggregate_daily(df)
 
@@ -523,7 +664,11 @@ def ingest_excel(
         session.commit()
 
         logger.info("Ingest complete: %s rows", len(snapshot_records))
-        return {"snapshots": len(snapshot_records), "deltas": len(delta_records)}
+        return {
+            "snapshots": len(snapshot_records),
+            "deltas": len(delta_records),
+            "validation_report": validation_report,
+        }
     except Exception as exc:
         session.rollback()
         existing_run = session.get(IngestRun, ingest_run.id)

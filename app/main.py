@@ -83,7 +83,11 @@ def upload_file(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except IngestError as exc:
         logger.warning("Upload failed: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if exc.report is not None:
+            detail = {"message": str(exc), "validation_report": exc.report}
+        else:
+            detail = str(exc)
+        raise HTTPException(status_code=400, detail=detail) from exc
     return payload
 
 

@@ -133,6 +133,10 @@ def _add_validation_error(
     report["errors"].append(entry)
 
 
+def _add_validation_warning(report: dict[str, Any], message: str) -> None:
+    report["warnings"].append({"message": message})
+
+
 def _coerce_text_column(df: pd.DataFrame, column: str) -> pd.Series:
     series = df[column].fillna("").astype(str).str.strip()
     return series.replace("", None)
@@ -468,6 +472,7 @@ def ingest_excel(
     company: str | None = None,
     file_name: str | None = None,
     mode: Literal["reject", "merge", "replace"] = "reject",
+    dry_run: bool = False,
 ) -> dict[str, object]:
     normalized_company = company.strip().lower() if company else None
     company = normalized_company or "default"
@@ -482,328 +487,355 @@ def ingest_excel(
     ingest_run_id: int | None = None
     ingest_run_payload: dict[str, object] | None = None
     try:
+        alliance_existing_date = None
         if is_alliance_company and mode != "replace":
-            existing_date = session.scalar(
+            alliance_existing_date = session.scalar(
                 select(DailySnapshot.id)
                 .where(DailySnapshot.company == company)
                 .where(DailySnapshot.data_date == upload_date)
             )
-            if existing_date:
+            if alliance_existing_date and not dry_run:
                 raise IngestConflict(
                     "Данные за эту дату уже загружены для компании Alliance. "
                     "Передайте replace=true, чтобы перезаписать."
                 )
-        with session.begin():
-            existing_hash = session.scalar(
-                select(IngestRun.id)
-                .where(IngestRun.company == company)
-                .where(IngestRun.file_hash == file_hash)
-            )
-            if existing_hash:
-                raise IngestConflict("Этот файл уже был загружен ранее.")
 
-            ingest_run_payload = {
-                "company": company,
-                "file_name": file_name or "unknown",
-                "file_hash": file_hash,
-                "data_date": upload_date,
-            }
-            ingest_run = IngestRun(
-                **ingest_run_payload,
-                status="failed",
+        logger.info("Starting ingest for %s", upload_date)
+        df = pd.read_excel(
+            io.BytesIO(file_bytes),
+            engine="openpyxl",
+        )
+        df, validation_report = validate_ingest_df(
+            df=df, file_name=file_name, company=company
+        )
+        if validation_report["errors"]:
+            raise IngestError(
+                "Файл содержит ошибки. Проверьте отчет.",
+                report=validation_report,
             )
-            session.add(ingest_run)
-            session.flush()
-            ingest_run_id = ingest_run.id
+        if alliance_existing_date and dry_run:
+            _add_validation_warning(
+                validation_report,
+                "Данные за эту дату уже загружены для компании Alliance. "
+                "Передайте replace=true, чтобы перезаписать.",
+            )
+        df["project_label"] = df["group_name"].map(_project_label_for_group)
+        aggregated = _aggregate_daily(df)
 
-            existing_date = session.scalar(
-                select(DailySnapshot.id)
-                .where(DailySnapshot.company == company)
-                .where(DailySnapshot.data_date == upload_date)
-            )
-            if existing_date and mode == "reject":
-                ingest_run.error_message = "Данные за эту дату уже загружены."
-                raise IngestConflict(ingest_run.error_message)
+        warehouses = aggregated["warehouse"].dropna().unique().tolist()
 
-            existing_date = session.scalar(
-                select(IngestRun.id)
-                .where(IngestRun.company == company)
-                .where(IngestRun.data_date == upload_date)
-                .where(IngestRun.id != ingest_run.id)
-            )
-            if existing_date:
-                ingest_run.error_message = "Загрузка за эту дату уже выполнялась."
-                raise IngestConflict(ingest_run.error_message)
-
-            logger.info("Starting ingest for %s", upload_date)
-            df = pd.read_excel(
-                io.BytesIO(file_bytes),
-                engine="openpyxl",
-            )
-            df, validation_report = validate_ingest_df(
-                df=df, file_name=file_name, company=company
-            )
-            if validation_report["errors"]:
-                raise IngestError(
-                    "Файл содержит ошибки. Проверьте отчет.",
-                    report=validation_report,
+        existing = _load_existing_snapshot(session, company, upload_date, warehouses)
+        if not existing.empty and mode == "reject":
+            if dry_run:
+                _add_validation_warning(
+                    validation_report,
+                    "Данные за эту дату и склад уже загружены. "
+                    "Используйте mode=merge для обновления или mode=replace для перезаписи.",
                 )
-            df["project_label"] = df["group_name"].map(_project_label_for_group)
-            aggregated = _aggregate_daily(df)
-
-            warehouses = aggregated["warehouse"].dropna().unique().tolist()
-
-            existing = _load_existing_snapshot(session, company, upload_date, warehouses)
-            if not existing.empty and mode == "reject":
+            else:
                 raise IngestConflict(
                     "Данные за эту дату и склад уже загружены. "
                     "Используйте mode=merge для обновления или mode=replace для перезаписи."
                 )
 
-            if not existing.empty and mode == "merge":
-                existing = existing.dropna(subset=["price"])
-                if not existing.empty:
-                    aggregated = aggregated.merge(
-                        existing,
-                        on=["warehouse", "sku", "manufacturer"],
-                        how="left",
-                        suffixes=("", "_existing"),
-                    )
-                    aggregated["price"] = aggregated["price_existing"].combine_first(
-                        aggregated["price"]
-                    )
-                    aggregated = aggregated.drop(columns=["price_existing"])
-
-            prev_date = session.scalar(
-                select(func.max(DailySnapshot.data_date))
-                .where(DailySnapshot.company == company)
-                .where(DailySnapshot.data_date < upload_date)
-            )
-            if prev_date is None:
-                merged = aggregated.copy()
-                merged["sold_qty"] = 0
-                merged["replenished_qty"] = 0
-            else:
-                prev_df = _load_prev_snapshot(session, company, prev_date, warehouses)
-                if is_alliance:
-                    key_columns = ["warehouse", "sku", "manufacturer"]
-                    prev_keys = prev_df[key_columns] if not prev_df.empty else prev_df
-                    all_keys = pd.concat(
-                        [aggregated[key_columns], prev_keys],
-                        ignore_index=True,
-                    ).drop_duplicates()
-                    merged = all_keys.merge(aggregated, on=key_columns, how="left")
-                    merged["stock_qty"] = merged["stock_qty"].fillna(0).astype(int)
-                else:
-                    merged = aggregated.copy()
-
-                merged = merged.merge(
-                    prev_df,
+        if not existing.empty and mode == "merge":
+            existing = existing.dropna(subset=["price"])
+            if not existing.empty:
+                aggregated = aggregated.merge(
+                    existing,
                     on=["warehouse", "sku", "manufacturer"],
                     how="left",
-                    suffixes=("", "_prev"),
+                    suffixes=("", "_existing"),
                 )
-                merged["stock_qty_prev"] = merged["stock_qty_prev"].fillna(0).astype(int)
-                merged["sold_qty"] = (
-                    merged["stock_qty_prev"] - merged["stock_qty"]
-                ).clip(lower=0)
-                merged["replenished_qty"] = (
-                    merged["stock_qty"] - merged["stock_qty_prev"]
-                ).clip(lower=0)
-                merged["sold_qty"] = merged["sold_qty"].astype(int)
-                merged["replenished_qty"] = merged["replenished_qty"].astype(int)
+                aggregated["price"] = aggregated["price_existing"].combine_first(
+                    aggregated["price"]
+                )
+                aggregated = aggregated.drop(columns=["price_existing"])
 
-            qa_report = _build_qa_report(merged)
-            qa_errors: list[dict[str, Any]] = []
-            negative_mask = (merged["sold_qty"] < 0) | (merged["replenished_qty"] < 0)
-            if negative_mask.any():
-                examples = (
-                    merged.loc[
-                        negative_mask,
-                        [
-                            "warehouse",
-                            "sku",
-                            "manufacturer",
-                            "sold_qty",
-                            "replenished_qty",
-                        ],
-                    ]
-                    .head(10)
-                    .to_dict("records")
-                )
-                qa_errors.append(
-                    {
-                        "type": "negative_quantities",
-                        "count": int(negative_mask.sum()),
-                        "examples": examples,
-                    }
-                )
-            simultaneous_mask = (merged["sold_qty"] > 0) & (
-                merged["replenished_qty"] > 0
+        prev_date = session.scalar(
+            select(func.max(DailySnapshot.data_date))
+            .where(DailySnapshot.company == company)
+            .where(DailySnapshot.data_date < upload_date)
+        )
+        if prev_date is None:
+            merged = aggregated.copy()
+            merged["sold_qty"] = 0
+            merged["replenished_qty"] = 0
+        else:
+            prev_df = _load_prev_snapshot(session, company, prev_date, warehouses)
+            if is_alliance:
+                key_columns = ["warehouse", "sku", "manufacturer"]
+                prev_keys = prev_df[key_columns] if not prev_df.empty else prev_df
+                all_keys = pd.concat(
+                    [aggregated[key_columns], prev_keys],
+                    ignore_index=True,
+                ).drop_duplicates()
+                merged = all_keys.merge(aggregated, on=key_columns, how="left")
+                merged["stock_qty"] = merged["stock_qty"].fillna(0).astype(int)
+            else:
+                merged = aggregated.copy()
+
+            merged = merged.merge(
+                prev_df,
+                on=["warehouse", "sku", "manufacturer"],
+                how="left",
+                suffixes=("", "_prev"),
             )
-            if simultaneous_mask.any():
-                examples = (
-                    merged.loc[
-                        simultaneous_mask,
-                        [
-                            "warehouse",
-                            "sku",
-                            "manufacturer",
-                            "sold_qty",
-                            "replenished_qty",
-                        ],
-                    ]
-                    .head(10)
-                    .to_dict("records")
+            merged["stock_qty_prev"] = merged["stock_qty_prev"].fillna(0).astype(int)
+            merged["sold_qty"] = (
+                merged["stock_qty_prev"] - merged["stock_qty"]
+            ).clip(lower=0)
+            merged["replenished_qty"] = (
+                merged["stock_qty"] - merged["stock_qty_prev"]
+            ).clip(lower=0)
+            merged["sold_qty"] = merged["sold_qty"].astype(int)
+            merged["replenished_qty"] = merged["replenished_qty"].astype(int)
+
+        qa_report = _build_qa_report(merged)
+        qa_errors: list[dict[str, Any]] = []
+        negative_mask = (merged["sold_qty"] < 0) | (merged["replenished_qty"] < 0)
+        if negative_mask.any():
+            examples = (
+                merged.loc[
+                    negative_mask,
+                    [
+                        "warehouse",
+                        "sku",
+                        "manufacturer",
+                        "sold_qty",
+                        "replenished_qty",
+                    ],
+                ]
+                .head(10)
+                .to_dict("records")
+            )
+            qa_errors.append(
+                {
+                    "type": "negative_quantities",
+                    "count": int(negative_mask.sum()),
+                    "examples": examples,
+                }
+            )
+        simultaneous_mask = (merged["sold_qty"] > 0) & (
+            merged["replenished_qty"] > 0
+        )
+        if simultaneous_mask.any():
+            examples = (
+                merged.loc[
+                    simultaneous_mask,
+                    [
+                        "warehouse",
+                        "sku",
+                        "manufacturer",
+                        "sold_qty",
+                        "replenished_qty",
+                    ],
+                ]
+                .head(10)
+                .to_dict("records")
+            )
+            qa_errors.append(
+                {
+                    "type": "simultaneous_sold_replenished",
+                    "count": int(simultaneous_mask.sum()),
+                    "examples": examples,
+                }
+            )
+        if prev_date is not None:
+            balance = (
+                merged.groupby(["warehouse", "sku"], dropna=False)
+                .agg(
+                    prev_stock=("stock_qty_prev", "sum"),
+                    replenished=("replenished_qty", "sum"),
+                    sold=("sold_qty", "sum"),
+                    curr_stock=("stock_qty", "sum"),
                 )
+                .reset_index()
+            )
+            balance["expected_stock"] = (
+                balance["prev_stock"] + balance["replenished"] - balance["sold"]
+            )
+            mismatch = balance[balance["expected_stock"] != balance["curr_stock"]]
+            if not mismatch.empty:
+                examples = mismatch.head(10).to_dict("records")
                 qa_errors.append(
                     {
-                        "type": "simultaneous_sold_replenished",
-                        "count": int(simultaneous_mask.sum()),
+                        "type": "stock_balance_mismatch",
+                        "count": int(len(mismatch)),
                         "examples": examples,
                     }
                 )
-            if prev_date is not None:
-                balance = (
-                    merged.groupby(["warehouse", "sku"], dropna=False)
-                    .agg(
-                        prev_stock=("stock_qty_prev", "sum"),
-                        replenished=("replenished_qty", "sum"),
-                        sold=("sold_qty", "sum"),
-                        curr_stock=("stock_qty", "sum"),
-                    )
-                    .reset_index()
-                )
-                balance["expected_stock"] = (
-                    balance["prev_stock"] + balance["replenished"] - balance["sold"]
-                )
-                mismatch = balance[balance["expected_stock"] != balance["curr_stock"]]
-                if not mismatch.empty:
-                    examples = mismatch.head(10).to_dict("records")
-                    qa_errors.append(
-                        {
-                            "type": "stock_balance_mismatch",
-                            "count": int(len(mismatch)),
-                            "examples": examples,
-                        }
-                    )
-            if qa_errors:
-                logger.error("QA validation failed: %s", qa_errors)
-                raise IngestError(
-                    "Проверка качества данных не пройдена.",
-                    report={"qa_report": qa_report, "qa_errors": qa_errors},
-                )
+        if qa_errors:
+            logger.error("QA validation failed: %s", qa_errors)
+            raise IngestError(
+                "Проверка качества данных не пройдена.",
+                report={"qa_report": qa_report, "qa_errors": qa_errors},
+            )
 
-            snapshot_records = merged[
-                [
-                    "warehouse",
-                    "sku",
-                    "manufacturer",
-                    "nomenclature",
-                    "group_name",
-                    "project_label",
-                    "stock_qty",
-                    "price",
-                ]
-            ].to_dict("records")
-            for record in snapshot_records:
-                record["data_date"] = upload_date
-                record["company"] = company
+        snapshot_records = merged[
+            [
+                "warehouse",
+                "sku",
+                "manufacturer",
+                "nomenclature",
+                "group_name",
+                "project_label",
+                "stock_qty",
+                "price",
+            ]
+        ].to_dict("records")
+        for record in snapshot_records:
+            record["data_date"] = upload_date
+            record["company"] = company
 
-            delta_records = merged[
-                [
-                    "warehouse",
-                    "sku",
-                    "manufacturer",
-                    "nomenclature",
-                    "group_name",
-                    "project_label",
-                    "stock_qty",
-                    "sold_qty",
-                    "replenished_qty",
-                    "price",
-                ]
-            ].to_dict("records")
-            for record in delta_records:
-                record["data_date"] = upload_date
-                record["company"] = company
+        delta_records = merged[
+            [
+                "warehouse",
+                "sku",
+                "manufacturer",
+                "nomenclature",
+                "group_name",
+                "project_label",
+                "stock_qty",
+                "sold_qty",
+                "replenished_qty",
+                "price",
+            ]
+        ].to_dict("records")
+        for record in delta_records:
+            record["data_date"] = upload_date
+            record["company"] = company
 
-            if mode == "replace":
-                session.execute(
-                    delete(DailySnapshot)
+        if not dry_run:
+            with session.begin():
+                existing_hash = session.scalar(
+                    select(IngestRun.id)
+                    .where(IngestRun.company == company)
+                    .where(IngestRun.file_hash == file_hash)
+                )
+                if existing_hash:
+                    raise IngestConflict("Этот файл уже был загружен ранее.")
+
+                ingest_run_payload = {
+                    "company": company,
+                    "file_name": file_name or "unknown",
+                    "file_hash": file_hash,
+                    "data_date": upload_date,
+                }
+                ingest_run = IngestRun(
+                    **ingest_run_payload,
+                    status="failed",
+                )
+                session.add(ingest_run)
+                session.flush()
+                ingest_run_id = ingest_run.id
+
+                existing_date = session.scalar(
+                    select(DailySnapshot.id)
                     .where(DailySnapshot.company == company)
                     .where(DailySnapshot.data_date == upload_date)
                 )
-                session.execute(
-                    delete(DailyDelta)
-                    .where(DailyDelta.company == company)
-                    .where(DailyDelta.data_date == upload_date)
+                if existing_date and mode == "reject":
+                    ingest_run.error_message = "Данные за эту дату уже загружены."
+                    raise IngestConflict(ingest_run.error_message)
+
+                existing_date = session.scalar(
+                    select(IngestRun.id)
+                    .where(IngestRun.company == company)
+                    .where(IngestRun.data_date == upload_date)
+                    .where(IngestRun.id != ingest_run.id)
                 )
-                session.bulk_insert_mappings(DailySnapshot, snapshot_records)
-                session.bulk_insert_mappings(DailyDelta, delta_records)
-            elif mode == "merge":
-                snapshot_existing_map = _load_existing_snapshot_map(
-                    session, company, upload_date
-                )
-                delta_existing_map = _load_existing_delta_map(
-                    session, company, upload_date
-                )
-                snapshot_updates = []
-                snapshot_inserts = []
-                for record in snapshot_records:
-                    key = (record["warehouse"], record["sku"], record["manufacturer"])
-                    existing_row = snapshot_existing_map.get(key)
-                    if existing_row:
-                        if existing_row["price"] is not None:
-                            record["price"] = existing_row["price"]
-                        record["id"] = existing_row["id"]
-                        snapshot_updates.append(record)
-                    else:
-                        snapshot_inserts.append(record)
-                delta_updates = []
-                delta_inserts = []
-                for record in delta_records:
-                    key = (record["warehouse"], record["sku"], record["manufacturer"])
-                    existing_row = delta_existing_map.get(key)
-                    if existing_row:
-                        if existing_row["price"] is not None:
-                            record["price"] = existing_row["price"]
-                        record["id"] = existing_row["id"]
-                        delta_updates.append(record)
-                    else:
-                        delta_inserts.append(record)
-                if snapshot_updates:
-                    session.bulk_update_mappings(DailySnapshot, snapshot_updates)
-                if snapshot_inserts:
-                    session.bulk_insert_mappings(DailySnapshot, snapshot_inserts)
-                if delta_updates:
-                    session.bulk_update_mappings(DailyDelta, delta_updates)
-                if delta_inserts:
-                    session.bulk_insert_mappings(DailyDelta, delta_inserts)
-            else:
-                if warehouses:
+                if existing_date:
+                    ingest_run.error_message = "Загрузка за эту дату уже выполнялась."
+                    raise IngestConflict(ingest_run.error_message)
+
+                if mode == "replace":
                     session.execute(
                         delete(DailySnapshot)
                         .where(DailySnapshot.company == company)
                         .where(DailySnapshot.data_date == upload_date)
-                        .where(DailySnapshot.warehouse.in_(warehouses))
                     )
                     session.execute(
                         delete(DailyDelta)
                         .where(DailyDelta.company == company)
                         .where(DailyDelta.data_date == upload_date)
-                        .where(DailyDelta.warehouse.in_(warehouses))
                     )
-                session.bulk_insert_mappings(DailySnapshot, snapshot_records)
-                session.bulk_insert_mappings(DailyDelta, delta_records)
-            ingest_run.status = "ok"
+                    session.bulk_insert_mappings(DailySnapshot, snapshot_records)
+                    session.bulk_insert_mappings(DailyDelta, delta_records)
+                elif mode == "merge":
+                    snapshot_existing_map = _load_existing_snapshot_map(
+                        session, company, upload_date
+                    )
+                    delta_existing_map = _load_existing_delta_map(
+                        session, company, upload_date
+                    )
+                    snapshot_updates = []
+                    snapshot_inserts = []
+                    for record in snapshot_records:
+                        key = (record["warehouse"], record["sku"], record["manufacturer"])
+                        existing_row = snapshot_existing_map.get(key)
+                        if existing_row:
+                            if existing_row["price"] is not None:
+                                record["price"] = existing_row["price"]
+                            record["id"] = existing_row["id"]
+                            snapshot_updates.append(record)
+                        else:
+                            snapshot_inserts.append(record)
+                    delta_updates = []
+                    delta_inserts = []
+                    for record in delta_records:
+                        key = (record["warehouse"], record["sku"], record["manufacturer"])
+                        existing_row = delta_existing_map.get(key)
+                        if existing_row:
+                            if existing_row["price"] is not None:
+                                record["price"] = existing_row["price"]
+                            record["id"] = existing_row["id"]
+                            delta_updates.append(record)
+                        else:
+                            delta_inserts.append(record)
+                    if snapshot_updates:
+                        session.bulk_update_mappings(DailySnapshot, snapshot_updates)
+                    if snapshot_inserts:
+                        session.bulk_insert_mappings(DailySnapshot, snapshot_inserts)
+                    if delta_updates:
+                        session.bulk_update_mappings(DailyDelta, delta_updates)
+                    if delta_inserts:
+                        session.bulk_insert_mappings(DailyDelta, delta_inserts)
+                else:
+                    if warehouses:
+                        session.execute(
+                            delete(DailySnapshot)
+                            .where(DailySnapshot.company == company)
+                            .where(DailySnapshot.data_date == upload_date)
+                            .where(DailySnapshot.warehouse.in_(warehouses))
+                        )
+                        session.execute(
+                            delete(DailyDelta)
+                            .where(DailyDelta.company == company)
+                            .where(DailyDelta.data_date == upload_date)
+                            .where(DailyDelta.warehouse.in_(warehouses))
+                        )
+                    session.bulk_insert_mappings(DailySnapshot, snapshot_records)
+                    session.bulk_insert_mappings(DailyDelta, delta_records)
+                ingest_run.status = "ok"
 
         logger.info("Ingest complete: %s rows", len(snapshot_records))
         return {
-            "snapshots": len(snapshot_records),
-            "deltas": len(delta_records),
+            "data_date": upload_date,
+            "prev_date": prev_date,
+            "row_stats": {
+                "rows_read": validation_report["rows_read"],
+                "rows_dropped": validation_report["rows_dropped"],
+                "snapshots": len(snapshot_records),
+                "deltas": len(delta_records),
+            },
+            "recognized_columns": validation_report["recognized_columns"],
+            "column_mapping": validation_report["normalized_mapping"],
             "validation_report": validation_report,
             "qa_report": qa_report,
+            "qa_errors": qa_errors,
+            "warnings": validation_report["warnings"],
+            "errors": validation_report["errors"],
         }
     except Exception as exc:
         session.rollback()

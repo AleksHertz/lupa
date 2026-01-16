@@ -45,7 +45,7 @@ def get_series(
             DailyDelta.data_date,
             func.sum(DailyDelta.sold_qty).label("sold_qty"),
             func.sum(DailyDelta.replenished_qty).label("replenished_qty"),
-            func.avg(DailyDelta.price_start_day).label("price_start_day"),
+            func.avg(DailyDelta.price).label("price"),
             func.sum(DailyDelta.stock_qty).label("stock_qty"),
         )
         .where(DailyDelta.data_date >= date_from)
@@ -68,7 +68,7 @@ def get_series(
     dates = [row.data_date.isoformat() for row in rows]
     sold = [float(row.sold_qty or 0) for row in rows]
     replenished = [float(row.replenished_qty or 0) for row in rows]
-    prices = [float(row.price_start_day or 0) for row in rows]
+    prices = [float(row.price or 0) for row in rows]
     stock_qty = [float(row.stock_qty or 0) for row in rows]
 
     sold_total = sum(sold)
@@ -80,7 +80,7 @@ def get_series(
         "dates": dates,
         "sold_qty": sold,
         "replenished_qty": replenished,
-        "price_start_day": prices,
+        "price": prices,
         "stock_qty": stock_qty,
         "kpi": {
             "sold_total": sold_total,
@@ -164,7 +164,7 @@ def get_top_sales(
             warehouse_column.label("warehouse"),
             func.sum(DailyDelta.sold_qty).label("sold"),
             func.sum(DailyDelta.replenished_qty).label("repl"),
-            func.max(DailyDelta.price_end_day).label("last_price"),
+            func.max(DailyDelta.price).label("last_price"),
         )
         .group_by(*group_by_columns)
         .order_by(func.sum(DailyDelta.sold_qty).desc())

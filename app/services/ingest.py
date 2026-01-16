@@ -309,8 +309,7 @@ def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
         df.groupby(keys, dropna=False)
         .agg(
             stock_qty=("stock_qty", "last"),
-            price_start_day=("price", "first"),
-            price_end_day=("price", "last"),
+            price=("price", "last"),
             nomenclature=("nomenclature", "first"),
             group_name=("group_name", "first"),
             project_label=("project_label", "first"),
@@ -352,15 +351,13 @@ def _load_existing_snapshot(
     warehouses: list[str],
 ) -> pd.DataFrame:
     if not warehouses:
-        return pd.DataFrame(
-            columns=["warehouse", "sku", "manufacturer", "price_start_day"]
-        )
+        return pd.DataFrame(columns=["warehouse", "sku", "manufacturer", "price"])
     stmt = (
         select(
             DailySnapshot.warehouse,
             DailySnapshot.sku,
             DailySnapshot.manufacturer,
-            DailySnapshot.price_start_day,
+            DailySnapshot.price,
         )
         .where(DailySnapshot.company == company)
         .where(DailySnapshot.data_date == upload_date)
@@ -368,12 +365,8 @@ def _load_existing_snapshot(
     )
     rows = session.execute(stmt).all()
     if not rows:
-        return pd.DataFrame(
-            columns=["warehouse", "sku", "manufacturer", "price_start_day"]
-        )
-    return pd.DataFrame(
-        rows, columns=["warehouse", "sku", "manufacturer", "price_start_day"]
-    )
+        return pd.DataFrame(columns=["warehouse", "sku", "manufacturer", "price"])
+    return pd.DataFrame(rows, columns=["warehouse", "sku", "manufacturer", "price"])
 
 
 def _load_existing_snapshot_map(
@@ -387,7 +380,7 @@ def _load_existing_snapshot_map(
             DailySnapshot.warehouse,
             DailySnapshot.sku,
             DailySnapshot.manufacturer,
-            DailySnapshot.price_start_day,
+            DailySnapshot.price,
         )
         .where(DailySnapshot.company == company)
         .where(DailySnapshot.data_date == upload_date)
@@ -396,7 +389,7 @@ def _load_existing_snapshot_map(
     return {
         (row.warehouse, row.sku, row.manufacturer): {
             "id": row.id,
-            "price_start_day": row.price_start_day,
+            "price": row.price,
         }
         for row in rows
     }
@@ -413,7 +406,7 @@ def _load_existing_delta_map(
             DailyDelta.warehouse,
             DailyDelta.sku,
             DailyDelta.manufacturer,
-            DailyDelta.price_start_day,
+            DailyDelta.price,
         )
         .where(DailyDelta.company == company)
         .where(DailyDelta.data_date == upload_date)
@@ -422,7 +415,7 @@ def _load_existing_delta_map(
     return {
         (row.warehouse, row.sku, row.manufacturer): {
             "id": row.id,
-            "price_start_day": row.price_start_day,
+            "price": row.price,
         }
         for row in rows
     }
@@ -506,7 +499,7 @@ def ingest_excel(
             )
 
         if not existing.empty and mode == "merge":
-            existing = existing.dropna(subset=["price_start_day"])
+            existing = existing.dropna(subset=["price"])
             if not existing.empty:
                 aggregated = aggregated.merge(
                     existing,
@@ -514,10 +507,10 @@ def ingest_excel(
                     how="left",
                     suffixes=("", "_existing"),
                 )
-                aggregated["price_start_day"] = aggregated[
-                    "price_start_day_existing"
-                ].combine_first(aggregated["price_start_day"])
-                aggregated = aggregated.drop(columns=["price_start_day_existing"])
+                aggregated["price"] = aggregated["price_existing"].combine_first(
+                    aggregated["price"]
+                )
+                aggregated = aggregated.drop(columns=["price_existing"])
 
         prev_date = session.scalar(
             select(func.max(DailySnapshot.data_date))
@@ -567,8 +560,7 @@ def ingest_excel(
                 "group_name",
                 "project_label",
                 "stock_qty",
-                "price_start_day",
-                "price_end_day",
+                "price",
             ]
         ].to_dict("records")
         for record in snapshot_records:
@@ -586,8 +578,7 @@ def ingest_excel(
                 "stock_qty",
                 "sold_qty",
                 "replenished_qty",
-                "price_start_day",
-                "price_end_day",
+                "price",
             ]
         ].to_dict("records")
         for record in delta_records:
@@ -618,8 +609,8 @@ def ingest_excel(
                 key = (record["warehouse"], record["sku"], record["manufacturer"])
                 existing_row = snapshot_existing_map.get(key)
                 if existing_row:
-                    if existing_row["price_start_day"] is not None:
-                        record["price_start_day"] = existing_row["price_start_day"]
+                    if existing_row["price"] is not None:
+                        record["price"] = existing_row["price"]
                     record["id"] = existing_row["id"]
                     snapshot_updates.append(record)
                 else:
@@ -630,8 +621,8 @@ def ingest_excel(
                 key = (record["warehouse"], record["sku"], record["manufacturer"])
                 existing_row = delta_existing_map.get(key)
                 if existing_row:
-                    if existing_row["price_start_day"] is not None:
-                        record["price_start_day"] = existing_row["price_start_day"]
+                    if existing_row["price"] is not None:
+                        record["price"] = existing_row["price"]
                     record["id"] = existing_row["id"]
                     delta_updates.append(record)
                 else:

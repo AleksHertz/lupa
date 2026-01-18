@@ -13,7 +13,12 @@ from sqlalchemy.sql import text
 from starlette.requests import Request
 
 from app.db import get_session
-from app.services.ingest import IngestConflict, IngestError, ingest_excel
+from app.services.ingest import (
+    IngestConflict,
+    IngestError,
+    IngestPersistenceError,
+    ingest_excel,
+)
 from app.services.query import get_ingest_state, get_series, get_suggestions, get_top_sales
 
 
@@ -114,6 +119,9 @@ def upload_file(
     except IngestConflict as exc:
         logger.warning("Upload conflict: %s", exc)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except IngestPersistenceError as exc:
+        logger.error("Upload persistence failure: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except IngestError as exc:
         logger.warning("Upload failed: %s", exc)
         if exc.report is not None:

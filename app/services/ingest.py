@@ -988,6 +988,7 @@ def ingest_excel(
                 raise IngestPersistenceError(
                     "Ingest reported success but no rows persisted"
                 )
+            session.commit()
 
         logger.info("Ingest complete: %s rows", len(snapshot_records))
         return {
@@ -1018,4 +1019,5 @@ def ingest_excel(
                     error_message = error_message[:4000] + "…(truncated)"
                 existing_run.error_message = error_message
                 existing_run.status = "failed"
+            session.commit()
         raise

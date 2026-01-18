@@ -583,19 +583,6 @@ def ingest_excel(
     ingest_run_id: int | None = None
     ingest_run_payload: dict[str, object] | None = None
     try:
-        alliance_existing_date = None
-        if is_alliance_company and mode != "replace":
-            alliance_existing_date = session.scalar(
-                select(DailySnapshot.id)
-                .where(DailySnapshot.company == company)
-                .where(DailySnapshot.data_date == upload_date)
-            )
-            if alliance_existing_date and not dry_run:
-                raise IngestConflict(
-                    "Данные за эту дату уже загружены для компании Alliance. "
-                    "Передайте replace=true, чтобы перезаписать."
-                )
-
         logger.info("Starting ingest for %s", upload_date)
         df = pd.read_excel(
             io.BytesIO(file_bytes),
@@ -612,12 +599,6 @@ def ingest_excel(
             raise IngestError(
                 "Файл содержит ошибки в данных. Проверьте отчет.",
                 report=validation_report,
-            )
-        if alliance_existing_date and dry_run:
-            _add_validation_warning(
-                validation_report,
-                "Данные за эту дату уже загружены для компании Alliance. "
-                "Передайте replace=true, чтобы перезаписать.",
             )
         df["sku"] = (
             df["sku"]
@@ -642,20 +623,18 @@ def ingest_excel(
 
         warehouses = aggregated["warehouse"].dropna().unique().tolist()
 
-        existing = _load_existing_snapshot(session, company, upload_date, warehouses)
-        if not existing.empty and mode == "reject":
-            if dry_run:
-                _add_validation_warning(
-                    validation_report,
-                    "Данные за эту дату и склад уже загружены. "
-                    "Используйте mode=merge для обновления или mode=replace для перезаписи.",
-                )
-            else:
-                raise IngestConflict(
-                    "Данные за эту дату и склад уже загружены. "
-                    "Используйте mode=merge для обновления или mode=replace для перезаписи."
-                )
+        existing_snapshot_date = session.scalar(
+            select(DailySnapshot.id)
+            .where(DailySnapshot.company == company)
+            .where(DailySnapshot.data_date == upload_date)
+        )
+        if existing_snapshot_date and mode != "replace":
+            raise IngestConflict(
+                "Данные за эту дату уже загружены. "
+                "Передайте replace=true, чтобы перезаписать."
+            )
 
+        existing = _load_existing_snapshot(session, company, upload_date, warehouses)
         if not existing.empty and mode == "merge":
             existing = existing.dropna(subset=["price"])
             if not existing.empty:
@@ -849,22 +828,6 @@ def ingest_excel(
             )
             if existing_hash:
                 raise IngestConflict("Этот файл уже был загружен ранее.")
-
-            existing_snapshot_date = session.scalar(
-                select(DailySnapshot.id)
-                .where(DailySnapshot.company == company)
-                .where(DailySnapshot.data_date == upload_date)
-            )
-            if existing_snapshot_date and mode == "reject":
-                raise IngestConflict("Данные за эту дату уже загружены.")
-
-            existing_ingest_run_date = session.scalar(
-                select(IngestRun.id)
-                .where(IngestRun.company == company)
-                .where(IngestRun.data_date == upload_date)
-            )
-            if existing_ingest_run_date:
-                raise IngestConflict("Загрузка за эту дату уже выполнялась.")
 
             snapshot_existing_map = None
             delta_existing_map = None

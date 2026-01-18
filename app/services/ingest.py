@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.models import DailyDelta, DailySnapshot, IngestRun
 
 logger = logging.getLogger(__name__)
+_BULK_BATCH_SIZE = 10000
 
 
 def _normalize_header(value: str) -> str:
@@ -370,6 +371,12 @@ def _project_label_for_group(group_name: str | None) -> str | None:
     if normalized in PROJECT_GROUPS["Китай"]:
         return "Китай"
     return None
+
+
+def _chunk_records(records: list[dict[str, Any]], batch_size: int) -> list[list[dict[str, Any]]]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    return [records[idx : idx + batch_size] for idx in range(0, len(records), batch_size)]
 
 
 def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
@@ -841,8 +848,10 @@ def ingest_excel(
                         .where(DailyDelta.company == company)
                         .where(DailyDelta.data_date == upload_date)
                     )
-                    session.bulk_insert_mappings(DailySnapshot, snapshot_records)
-                    session.bulk_insert_mappings(DailyDelta, delta_records)
+                    for batch in _chunk_records(snapshot_records, _BULK_BATCH_SIZE):
+                        session.bulk_insert_mappings(DailySnapshot, batch)
+                    for batch in _chunk_records(delta_records, _BULK_BATCH_SIZE):
+                        session.bulk_insert_mappings(DailyDelta, batch)
                 elif mode == "merge":
                     snapshot_updates = []
                     snapshot_inserts = []
@@ -871,11 +880,15 @@ def ingest_excel(
                     if snapshot_updates:
                         session.bulk_update_mappings(DailySnapshot, snapshot_updates)
                     if snapshot_inserts:
-                        session.bulk_insert_mappings(DailySnapshot, snapshot_inserts)
+                        for batch in _chunk_records(
+                            snapshot_inserts, _BULK_BATCH_SIZE
+                        ):
+                            session.bulk_insert_mappings(DailySnapshot, batch)
                     if delta_updates:
                         session.bulk_update_mappings(DailyDelta, delta_updates)
                     if delta_inserts:
-                        session.bulk_insert_mappings(DailyDelta, delta_inserts)
+                        for batch in _chunk_records(delta_inserts, _BULK_BATCH_SIZE):
+                            session.bulk_insert_mappings(DailyDelta, batch)
                 else:
                     if warehouses:
                         session.execute(
@@ -890,8 +903,10 @@ def ingest_excel(
                             .where(DailyDelta.data_date == upload_date)
                             .where(DailyDelta.warehouse.in_(warehouses))
                         )
-                    session.bulk_insert_mappings(DailySnapshot, snapshot_records)
-                    session.bulk_insert_mappings(DailyDelta, delta_records)
+                    for batch in _chunk_records(snapshot_records, _BULK_BATCH_SIZE):
+                        session.bulk_insert_mappings(DailySnapshot, batch)
+                    for batch in _chunk_records(delta_records, _BULK_BATCH_SIZE):
+                        session.bulk_insert_mappings(DailyDelta, batch)
                 ingest_run.status = "ok"
 
         logger.info("Ingest complete: %s rows", len(snapshot_records))

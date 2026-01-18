@@ -599,6 +599,24 @@ def ingest_excel(
                 "Данные за эту дату уже загружены для компании Alliance. "
                 "Передайте replace=true, чтобы перезаписать.",
             )
+        df["sku"] = (
+            df["sku"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            .str.replace(r"\s+", " ", regex=True)
+        )
+        empty_sku = df["sku"].eq("")
+        if empty_sku.any():
+            dropped = int(empty_sku.sum())
+            validation_report["rows_dropped"] += dropped
+            logger.info("Dropping rows with empty sku after normalization: %s", dropped)
+            df = df.loc[~empty_sku].copy()
+        dup_count = int(df.duplicated(subset=["warehouse", "sku"]).sum())
+        logger.info("Duplicate sku rows detected: %s", dup_count)
+        df = df.sort_index().drop_duplicates(subset=["warehouse", "sku"], keep="last")
+        logger.info("Rows after sku dedupe: %s", len(df))
         df["project_label"] = df["group_name"].map(_project_label_for_group)
         aggregated = _aggregate_daily(df)
 

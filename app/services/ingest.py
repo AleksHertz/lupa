@@ -780,21 +780,48 @@ def ingest_excel(
             record["company"] = company
 
         if not dry_run:
-            with session.begin():
-                existing_hash = session.scalar(
-                    select(IngestRun.id)
-                    .where(IngestRun.company == company)
-                    .where(IngestRun.file_hash == file_hash)
-                )
-                if existing_hash:
-                    raise IngestConflict("Этот файл уже был загружен ранее.")
+            ingest_run_payload = {
+                "company": company,
+                "file_name": file_name or "unknown",
+                "file_hash": file_hash,
+                "data_date": upload_date,
+            }
+            existing_hash = session.scalar(
+                select(IngestRun.id)
+                .where(IngestRun.company == company)
+                .where(IngestRun.file_hash == file_hash)
+            )
+            if existing_hash:
+                raise IngestConflict("Этот файл уже был загружен ранее.")
 
-                ingest_run_payload = {
-                    "company": company,
-                    "file_name": file_name or "unknown",
-                    "file_hash": file_hash,
-                    "data_date": upload_date,
-                }
+            existing_snapshot_date = session.scalar(
+                select(DailySnapshot.id)
+                .where(DailySnapshot.company == company)
+                .where(DailySnapshot.data_date == upload_date)
+            )
+            if existing_snapshot_date and mode == "reject":
+                raise IngestConflict("Данные за эту дату уже загружены.")
+
+            existing_ingest_run_date = session.scalar(
+                select(IngestRun.id)
+                .where(IngestRun.company == company)
+                .where(IngestRun.data_date == upload_date)
+            )
+            if existing_ingest_run_date:
+                raise IngestConflict("Загрузка за эту дату уже выполнялась.")
+
+            snapshot_existing_map = None
+            delta_existing_map = None
+            if mode == "merge":
+                snapshot_existing_map = _load_existing_snapshot_map(
+                    session, company, upload_date
+                )
+                delta_existing_map = _load_existing_delta_map(
+                    session, company, upload_date
+                )
+
+            with session.begin_nested():
+                # Use SAVEPOINT to stay compatible with SQLAlchemy 2.0 nested transactions.
                 ingest_run = IngestRun(
                     **ingest_run_payload,
                     status="failed",
@@ -802,25 +829,6 @@ def ingest_excel(
                 session.add(ingest_run)
                 session.flush()
                 ingest_run_id = ingest_run.id
-
-                existing_date = session.scalar(
-                    select(DailySnapshot.id)
-                    .where(DailySnapshot.company == company)
-                    .where(DailySnapshot.data_date == upload_date)
-                )
-                if existing_date and mode == "reject":
-                    ingest_run.error_message = "Данные за эту дату уже загружены."
-                    raise IngestConflict(ingest_run.error_message)
-
-                existing_date = session.scalar(
-                    select(IngestRun.id)
-                    .where(IngestRun.company == company)
-                    .where(IngestRun.data_date == upload_date)
-                    .where(IngestRun.id != ingest_run.id)
-                )
-                if existing_date:
-                    ingest_run.error_message = "Загрузка за эту дату уже выполнялась."
-                    raise IngestConflict(ingest_run.error_message)
 
                 if mode == "replace":
                     session.execute(
@@ -836,12 +844,6 @@ def ingest_excel(
                     session.bulk_insert_mappings(DailySnapshot, snapshot_records)
                     session.bulk_insert_mappings(DailyDelta, delta_records)
                 elif mode == "merge":
-                    snapshot_existing_map = _load_existing_snapshot_map(
-                        session, company, upload_date
-                    )
-                    delta_existing_map = _load_existing_delta_map(
-                        session, company, upload_date
-                    )
                     snapshot_updates = []
                     snapshot_inserts = []
                     for record in snapshot_records:
@@ -913,7 +915,8 @@ def ingest_excel(
     except Exception as exc:
         session.rollback()
         if ingest_run_payload is not None:
-            with session.begin():
+            with session.begin_nested():
+                # Use SAVEPOINT to stay compatible with SQLAlchemy 2.0 nested transactions.
                 existing_run = None
                 if ingest_run_id is not None:
                     existing_run = session.get(IngestRun, ingest_run_id)

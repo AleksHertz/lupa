@@ -993,10 +993,12 @@ def ingest_excel(
         logger.info("Ingest complete: %s rows", len(snapshot_records))
         return {
             "status": "ok",
-            "date": upload_date,
+            "company": company,
+            "data_date": upload_date.isoformat(),
+            "prev_date": prev_date.isoformat() if prev_date else None,
+            "rows_snapshot": len(snapshot_records),
+            "rows_delta": len(delta_records),
             "rows_long": len(snapshot_records),
-            "prev_date": prev_date,
-            "delta_rows": len(delta_records),
         }
     except Exception as exc:
         session.rollback()

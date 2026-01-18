@@ -933,6 +933,9 @@ def ingest_excel(
                     if ingest_run_id is not None:
                         existing_run.id = ingest_run_id
                     session.add(existing_run)
-                existing_run.error_message = str(exc)
+                error_message = str(exc)
+                if len(error_message) > 4000:
+                    error_message = error_message[:4000] + "…(truncated)"
+                existing_run.error_message = error_message
                 existing_run.status = "failed"
         raise

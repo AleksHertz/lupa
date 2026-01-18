@@ -817,6 +817,7 @@ def ingest_excel(
         for record in delta_records:
             record["data_date"] = upload_date
             record["company"] = company
+        rows_delta = 0 if prev_date is None else len(delta_records)
 
         if not dry_run:
             ingest_run_payload = {
@@ -997,7 +998,7 @@ def ingest_excel(
             "data_date": upload_date.isoformat(),
             "prev_date": prev_date.isoformat() if prev_date else None,
             "rows_snapshot": len(snapshot_records),
-            "rows_delta": len(delta_records),
+            "rows_delta": rows_delta,
             "rows_long": len(snapshot_records),
         }
     except Exception as exc:

@@ -7,6 +7,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     desc,
 )
@@ -22,12 +23,12 @@ class DailySnapshot(Base):
     data_date: Mapped[datetime] = mapped_column(Date, index=True)
     company: Mapped[str] = mapped_column(String(100), index=True)
     warehouse: Mapped[str] = mapped_column(String(100), index=True)
-    sku: Mapped[str] = mapped_column(String(100), index=True)
-    mfg_sku: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
-    manufacturer: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
-    name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
-    brand: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
-    group_name: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    sku: Mapped[str] = mapped_column(Text, index=True)
+    mfg_sku: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    manufacturer: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    brand: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    group_name: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     project_label: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     stock_qty: Mapped[int] = mapped_column(Integer)
     price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
@@ -60,12 +61,12 @@ class DailyDelta(Base):
     data_date: Mapped[datetime] = mapped_column(Date, index=True)
     company: Mapped[str] = mapped_column(String(100), index=True)
     warehouse: Mapped[str] = mapped_column(String(100), index=True)
-    sku: Mapped[str] = mapped_column(String(100), index=True)
-    mfg_sku: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
-    manufacturer: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
-    name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
-    brand: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
-    group_name: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    sku: Mapped[str] = mapped_column(Text, index=True)
+    mfg_sku: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    manufacturer: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    brand: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    group_name: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     project_label: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     stock_qty: Mapped[int] = mapped_column(Integer)
     sold_qty: Mapped[int] = mapped_column(Integer)
@@ -96,12 +97,12 @@ class IngestRun(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     company: Mapped[str] = mapped_column(String(100), index=True)
-    file_name: Mapped[str] = mapped_column(String(255))
+    file_name: Mapped[str] = mapped_column(Text)
     file_hash: Mapped[str] = mapped_column(String(64))
     data_date: Mapped[datetime] = mapped_column(Date, index=True)
     status: Mapped[str] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         Index("ix_ingest_runs_company_data_date", "company", "data_date"),

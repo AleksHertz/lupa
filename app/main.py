@@ -98,6 +98,8 @@ def upload_file(
 ):
     if replace:
         mode = "replace"
+    current_db = session.execute(text("select current_database()")).scalar()
+    logger.debug("Current database: %s", current_db)
     try:
         payload = ingest_excel(
             session=session,

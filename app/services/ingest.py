@@ -71,6 +71,10 @@ class IngestConflict(IngestError):
     pass
 
 
+class IngestPersistenceError(IngestError):
+    pass
+
+
 def date_from_filename(name: str, now: datetime) -> date | None:
     match = re.search(r"(\d{2})\.(\d{2})", name)
     if not match:
@@ -922,6 +926,68 @@ def ingest_excel(
                         delta_update_columns,
                     )
                 ingest_run.status = "ok"
+
+            snapshot_count = session.scalar(
+                select(func.count())
+                .select_from(DailySnapshot)
+                .where(DailySnapshot.company == company)
+                .where(DailySnapshot.data_date == upload_date)
+            )
+            delta_count = session.scalar(
+                select(func.count())
+                .select_from(DailyDelta)
+                .where(DailyDelta.company == company)
+                .where(DailyDelta.data_date == upload_date)
+            )
+            if ingest_run_id is not None:
+                ingest_run_count_query = (
+                    select(func.count())
+                    .select_from(IngestRun)
+                    .where(IngestRun.id == ingest_run_id)
+                )
+            else:
+                ingest_run_count_query = (
+                    select(func.count())
+                    .select_from(IngestRun)
+                    .where(IngestRun.company == company)
+                    .where(IngestRun.data_date == upload_date)
+                )
+            ingest_run_count = session.scalar(ingest_run_count_query)
+
+            snapshot_count = int(snapshot_count or 0)
+            delta_count = int(delta_count or 0)
+            ingest_run_count = int(ingest_run_count or 0)
+
+            logger.info(
+                "Persisted daily_snapshot rows: %s for %s/%s",
+                snapshot_count,
+                company,
+                upload_date,
+            )
+            logger.info(
+                "Persisted daily_delta rows: %s for %s/%s",
+                delta_count,
+                company,
+                upload_date,
+            )
+            logger.info(
+                "Persisted ingest_runs rows: %s for %s/%s",
+                ingest_run_count,
+                company,
+                upload_date,
+            )
+
+            snapshot_expected = len(snapshot_records) > 0
+            delta_expected = len(delta_records) > 0
+            ingest_run_expected = True
+            if (
+                (snapshot_expected and snapshot_count == 0)
+                or (delta_expected and delta_count == 0)
+                or (ingest_run_expected and ingest_run_count == 0)
+            ):
+                raise IngestPersistenceError(
+                    "Ingest reported success but no rows persisted"
+                )
 
         logger.info("Ingest complete: %s rows", len(snapshot_records))
         return {

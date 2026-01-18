@@ -911,21 +911,11 @@ def ingest_excel(
 
         logger.info("Ingest complete: %s rows", len(snapshot_records))
         return {
-            "data_date": upload_date,
+            "status": "ok",
+            "date": upload_date,
+            "rows_long": len(snapshot_records),
             "prev_date": prev_date,
-            "row_stats": {
-                "rows_read": validation_report["rows_read"],
-                "rows_dropped": validation_report["rows_dropped"],
-                "snapshots": len(snapshot_records),
-                "deltas": len(delta_records),
-            },
-            "recognized_columns": validation_report["recognized_columns"],
-            "column_mapping": validation_report["normalized_mapping"],
-            "validation_report": validation_report,
-            "qa_report": qa_report,
-            "qa_errors": qa_errors,
-            "warnings": validation_report["warnings"],
-            "errors": validation_report["errors"],
+            "delta_rows": len(delta_records),
         }
     except Exception as exc:
         session.rollback()

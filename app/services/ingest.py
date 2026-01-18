@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 import pandas as pd
 from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.models import DailyDelta, DailySnapshot, IngestRun
@@ -379,6 +380,24 @@ def _chunk_records(records: list[dict[str, Any]], batch_size: int) -> list[list[
     return [records[idx : idx + batch_size] for idx in range(0, len(records), batch_size)]
 
 
+def _upsert_batches(
+    session: Session,
+    model: type[DailySnapshot] | type[DailyDelta],
+    records: list[dict[str, Any]],
+    update_columns: list[str],
+) -> None:
+    if not records:
+        return
+    table = model.__table__
+    insert_stmt = insert(table)
+    stmt = insert_stmt.on_conflict_do_update(
+        index_elements=["company", "data_date", "warehouse", "sku"],
+        set_={column: getattr(insert_stmt.excluded, column) for column in update_columns},
+    )
+    for batch in _chunk_records(records, _BULK_BATCH_SIZE):
+        session.execute(stmt, batch)
+
+
 def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if "nomenclature" not in df.columns and "name" in df.columns:
@@ -387,17 +406,18 @@ def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
     df["price"] = pd.to_numeric(df["price"], errors="coerce")
     df = df.sort_index()
     keys = ["warehouse", "sku", "manufacturer"]
-    aggregated = (
-        df.groupby(keys, dropna=False)
-        .agg(
-            stock_qty=("stock_qty", "last"),
-            price=("price", "last"),
-            nomenclature=("nomenclature", "first"),
-            group_name=("group_name", "first"),
-            project_label=("project_label", "first"),
-        )
-        .reset_index()
-    )
+    aggregations: dict[str, tuple[str, str]] = {
+        "stock_qty": ("stock_qty", "last"),
+        "price": ("price", "last"),
+        "nomenclature": ("nomenclature", "first"),
+        "group_name": ("group_name", "first"),
+        "project_label": ("project_label", "first"),
+    }
+    if "mfg_sku" in df.columns:
+        aggregations["mfg_sku"] = ("mfg_sku", "first")
+    if "brand" in df.columns:
+        aggregations["brand"] = ("brand", "first")
+    aggregated = df.groupby(keys, dropna=False).agg(**aggregations).reset_index()
     return aggregated
 
 
@@ -770,36 +790,47 @@ def ingest_excel(
                 report={"qa_report": qa_report, "qa_errors": qa_errors},
             )
 
-        snapshot_records = merged[
-            [
-                "warehouse",
-                "sku",
-                "manufacturer",
-                "nomenclature",
-                "group_name",
-                "project_label",
-                "stock_qty",
-                "price",
-            ]
-        ].to_dict("records")
+        merged_records = merged.rename(columns={"nomenclature": "name"})
+        snapshot_columns = ["warehouse", "sku"]
+        for optional_column in ("mfg_sku", "brand"):
+            if optional_column in merged_records.columns:
+                snapshot_columns.append(optional_column)
+        snapshot_columns += [
+            "manufacturer",
+            "name",
+            "group_name",
+            "project_label",
+            "stock_qty",
+            "price",
+        ]
+        snapshot_records = merged_records[snapshot_columns].to_dict("records")
+        snapshot_update_columns = [
+            column
+            for column in snapshot_columns
+            if column not in {"warehouse", "sku"}
+        ]
         for record in snapshot_records:
             record["data_date"] = upload_date
             record["company"] = company
 
-        delta_records = merged[
-            [
-                "warehouse",
-                "sku",
-                "manufacturer",
-                "nomenclature",
-                "group_name",
-                "project_label",
-                "stock_qty",
-                "sold_qty",
-                "replenished_qty",
-                "price",
-            ]
-        ].to_dict("records")
+        delta_columns = [
+            "warehouse",
+            "sku",
+            "manufacturer",
+            "name",
+            "group_name",
+            "project_label",
+            "stock_qty",
+            "sold_qty",
+            "replenished_qty",
+            "price",
+        ]
+        delta_records = merged_records[delta_columns].to_dict("records")
+        delta_update_columns = [
+            column
+            for column in delta_columns
+            if column not in {"warehouse", "sku"}
+        ]
         for record in delta_records:
             record["data_date"] = upload_date
             record["company"] = company
@@ -866,47 +897,41 @@ def ingest_excel(
                         .where(DailyDelta.company == company)
                         .where(DailyDelta.data_date == upload_date)
                     )
-                    for batch in _chunk_records(snapshot_records, _BULK_BATCH_SIZE):
-                        session.bulk_insert_mappings(DailySnapshot, batch)
-                    for batch in _chunk_records(delta_records, _BULK_BATCH_SIZE):
-                        session.bulk_insert_mappings(DailyDelta, batch)
+                    _upsert_batches(
+                        session,
+                        DailySnapshot,
+                        snapshot_records,
+                        snapshot_update_columns,
+                    )
+                    _upsert_batches(
+                        session,
+                        DailyDelta,
+                        delta_records,
+                        delta_update_columns,
+                    )
                 elif mode == "merge":
-                    snapshot_updates = []
-                    snapshot_inserts = []
-                    for record in snapshot_records:
-                        key = (record["warehouse"], record["sku"], record["manufacturer"])
-                        existing_row = snapshot_existing_map.get(key)
-                        if existing_row:
-                            if existing_row["price"] is not None:
-                                record["price"] = existing_row["price"]
-                            record["id"] = existing_row["id"]
-                            snapshot_updates.append(record)
-                        else:
-                            snapshot_inserts.append(record)
-                    delta_updates = []
-                    delta_inserts = []
                     for record in delta_records:
                         key = (record["warehouse"], record["sku"], record["manufacturer"])
                         existing_row = delta_existing_map.get(key)
-                        if existing_row:
-                            if existing_row["price"] is not None:
-                                record["price"] = existing_row["price"]
-                            record["id"] = existing_row["id"]
-                            delta_updates.append(record)
-                        else:
-                            delta_inserts.append(record)
-                    if snapshot_updates:
-                        session.bulk_update_mappings(DailySnapshot, snapshot_updates)
-                    if snapshot_inserts:
-                        for batch in _chunk_records(
-                            snapshot_inserts, _BULK_BATCH_SIZE
-                        ):
-                            session.bulk_insert_mappings(DailySnapshot, batch)
-                    if delta_updates:
-                        session.bulk_update_mappings(DailyDelta, delta_updates)
-                    if delta_inserts:
-                        for batch in _chunk_records(delta_inserts, _BULK_BATCH_SIZE):
-                            session.bulk_insert_mappings(DailyDelta, batch)
+                        if existing_row and existing_row["price"] is not None:
+                            record["price"] = existing_row["price"]
+                    for record in snapshot_records:
+                        key = (record["warehouse"], record["sku"], record["manufacturer"])
+                        existing_row = snapshot_existing_map.get(key)
+                        if existing_row and existing_row["price"] is not None:
+                            record["price"] = existing_row["price"]
+                    _upsert_batches(
+                        session,
+                        DailySnapshot,
+                        snapshot_records,
+                        snapshot_update_columns,
+                    )
+                    _upsert_batches(
+                        session,
+                        DailyDelta,
+                        delta_records,
+                        delta_update_columns,
+                    )
                 else:
                     if warehouses:
                         session.execute(
@@ -921,10 +946,18 @@ def ingest_excel(
                             .where(DailyDelta.data_date == upload_date)
                             .where(DailyDelta.warehouse.in_(warehouses))
                         )
-                    for batch in _chunk_records(snapshot_records, _BULK_BATCH_SIZE):
-                        session.bulk_insert_mappings(DailySnapshot, batch)
-                    for batch in _chunk_records(delta_records, _BULK_BATCH_SIZE):
-                        session.bulk_insert_mappings(DailyDelta, batch)
+                    _upsert_batches(
+                        session,
+                        DailySnapshot,
+                        snapshot_records,
+                        snapshot_update_columns,
+                    )
+                    _upsert_batches(
+                        session,
+                        DailyDelta,
+                        delta_records,
+                        delta_update_columns,
+                    )
                 ingest_run.status = "ok"
 
         logger.info("Ingest complete: %s rows", len(snapshot_records))

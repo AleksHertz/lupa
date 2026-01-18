@@ -1,8 +1,11 @@
+import logging
 import os
 from functools import lru_cache
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -25,7 +28,11 @@ def get_database_url() -> str:
 @lru_cache
 def get_engine():
     url = get_database_url()
-    return create_engine(url, pool_pre_ping=True)
+    engine = create_engine(url, pool_pre_ping=True)
+    logger.info(
+        "Database engine URL: %s", engine.url.render_as_string(hide_password=True)
+    )
+    return engine
 
 
 @lru_cache

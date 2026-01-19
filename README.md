@@ -43,6 +43,8 @@ uvicorn app.main:app --reload
 5. После pre-deploy Railway запускает приложение обычной командой из Dockerfile
    (через `uvicorn`), отдельный доступ к Shell не требуется.
 
+Railway Pre-deploy Command = python -m alembic upgrade head
+
 ## API
 
 - `POST /upload` — загрузка Excel.

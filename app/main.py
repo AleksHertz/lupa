@@ -135,7 +135,7 @@ def upload_file(
             status_code=499,
             content={"detail": "Client disconnected"},
         )
-    logger.info("Uploaded file size: %s bytes", len(file_bytes))
+    logger.info("Upload received: %s bytes for %s", len(file_bytes), file.filename)
     try:
         payload = ingest_excel(
             session=session,

@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Literal
 
 import pandas as pd
-from sqlalchemy import func, select
+from sqlalchemy import func, insert as core_insert, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -406,7 +406,7 @@ def _insert_batches(
     if not records:
         return
     table = model.__table__
-    insert_stmt = table.insert()
+    insert_stmt = core_insert(table)
     for batch in _iter_batches(records, _BULK_BATCH_SIZE):
         session.execute(insert_stmt, batch)
 

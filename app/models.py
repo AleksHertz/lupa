@@ -164,3 +164,37 @@ class IngestRun(Base):
             name="uq_ingest_runs_company_file_hash",
         ),
     )
+
+
+class IngestRunV2(Base):
+    __tablename__ = "ingest_runs_v2"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    company: Mapped[str] = mapped_column(Text)
+    data_date: Mapped[datetime] = mapped_column(Date)
+    file_name: Mapped[str] = mapped_column(Text)
+    file_hash: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("now()"),
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rows_read: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rows_long: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rows_snapshot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rows_changes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "company",
+            "data_date",
+            name="uq_ingest_runs_v2_company_data_date",
+        ),
+        Index(
+            "ix_ingest_runs_v2_company_data_date_desc",
+            "company",
+            desc("data_date"),
+        ),
+    )

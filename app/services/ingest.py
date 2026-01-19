@@ -572,8 +572,11 @@ def ingest_excel(
     dry_run: bool = False,
 ) -> dict[str, object]:
     normalized_company = company.strip().lower() if company else None
-    company = normalized_company or "default"
-    is_alliance = normalized_company == "альянс"
+    if normalized_company in {"alliance", "альянс"} or normalized_company is None:
+        company = "alliance"
+    else:
+        company = normalized_company
+    is_alliance = company == "alliance"
     if is_alliance and file_name:
         parsed_date = date_from_filename(file_name, datetime.now())
         if parsed_date is not None:
@@ -809,15 +812,15 @@ def ingest_excel(
         duration = datetime.utcnow() - started_at
         return {
             "status": "ok",
+            "mode": mode,
             "company": company,
             "data_date": upload_date.isoformat(),
             "prev_date": prev_date.isoformat() if prev_date else None,
             "rows_read": int(validation_report.get("rows_read", 0)),
             "rows_long": rows_long,
-            "dup_count": dup_count,
+            "rows_snapshot": len(snapshot_records),
+            "rows_changes": rows_changes,
             "duration_ms": int(duration.total_seconds() * 1000),
-            "snapshots": len(snapshot_records),
-            "deltas": rows_changes,
         }
     except Exception as exc:
         session.rollback()

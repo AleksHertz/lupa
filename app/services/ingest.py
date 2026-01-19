@@ -251,11 +251,9 @@ def _validate_alliance_df(
     empty_sku_and_mfg = sku_missing & mfg_missing
     if empty_sku_and_mfg.any():
         for idx in df[empty_sku_and_mfg].index:
-            _add_validation_error(
+            _add_validation_warning(
                 report,
-                "Пустые sku/mfg_sku.",
-                row=idx,
-                column="sku",
+                f"Пустые sku/mfg_sku в строке {int(idx)}. Строка удалена.",
             )
         report["rows_dropped"] += int(empty_sku_and_mfg.sum())
         df = df.loc[~empty_sku_and_mfg].copy()
@@ -345,8 +343,9 @@ def _validate_default_df(
     empty_sku = df["sku"].isna()
     if empty_sku.any():
         for idx in df[empty_sku].index:
-            _add_validation_error(
-                report, "Артикул обязателен.", row=idx, column="sku"
+            _add_validation_warning(
+                report,
+                f"Пустой артикул в строке {int(idx)}. Строка удалена.",
             )
         report["rows_dropped"] += int(empty_sku.sum())
         df = df.loc[~empty_sku].copy()
@@ -391,23 +390,17 @@ def _chunk_records(records: list[dict[str, Any]], batch_size: int) -> list[list[
     return [records[idx : idx + batch_size] for idx in range(0, len(records), batch_size)]
 
 
-def _upsert_batches(
+def _insert_batches(
     session: Session,
     model: type[FactSnapshot] | type[FactDeltaChange],
     records: list[dict[str, Any]],
-    update_columns: list[str],
-    index_elements: list[str],
 ) -> None:
     if not records:
         return
     table = model.__table__
-    insert_stmt = insert(table)
-    stmt = insert_stmt.on_conflict_do_update(
-        index_elements=index_elements,
-        set_={column: getattr(insert_stmt.excluded, column) for column in update_columns},
-    )
+    insert_stmt = table.insert()
     for batch in _chunk_records(records, _BULK_BATCH_SIZE):
-        session.execute(stmt, batch)
+        session.execute(insert_stmt, batch)
 
 
 def _upsert_items(session: Session, records: list[dict[str, Any]]) -> None:
@@ -416,8 +409,6 @@ def _upsert_items(session: Session, records: list[dict[str, Any]]) -> None:
     table = Item.__table__
     insert_stmt = insert(table)
     update_columns = [
-        "sku_norm",
-        "mfg_sku_norm",
         "manufacturer_norm",
         "name",
         "brand",
@@ -627,7 +618,6 @@ def ingest_excel(
     normalized_company = company.strip().lower() if company else None
     company = normalized_company or "default"
     is_alliance = normalized_company == "альянс"
-    is_alliance_company = normalized_company in {"alliance", "альянс"}
     if is_alliance and file_name:
         parsed_date = date_from_filename(file_name, datetime.now())
         if parsed_date is not None:
@@ -655,28 +645,35 @@ def ingest_excel(
                 "Файл содержит ошибки в данных. Проверьте отчет.",
                 report=validation_report,
             )
-        df["sku"] = (
-            df["sku"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.upper()
-            .str.replace(r"\s+", " ", regex=True)
-        )
+        df["sku_norm"] = df["sku"].map(_normalize_item_value)
         if "manufacturer" in df.columns:
             df["manufacturer"] = df["manufacturer"].map(_normalize_item_value)
         if "mfg_sku" in df.columns:
-            df["mfg_sku"] = df["mfg_sku"].map(_normalize_item_value)
-        empty_sku = df["sku"].eq("")
-        if empty_sku.any():
-            dropped = int(empty_sku.sum())
+            df["mfg_sku_norm"] = df["mfg_sku"].map(_normalize_item_value)
+        else:
+            df["mfg_sku_norm"] = None
+        df.loc[df["mfg_sku_norm"].isna(), "mfg_sku_norm"] = df["sku_norm"]
+        df.loc[df["sku_norm"].isna(), "sku_norm"] = df["mfg_sku_norm"]
+        df["canonical_sku"] = df["mfg_sku_norm"].where(
+            df["mfg_sku_norm"].notna(), df["sku_norm"]
+        )
+        empty_canonical = df["canonical_sku"].isna()
+        if empty_canonical.any():
+            dropped = int(empty_canonical.sum())
             validation_report["rows_dropped"] += dropped
-            logger.info("Dropping rows with empty sku after normalization: %s", dropped)
-            df = df.loc[~empty_sku].copy()
-        dup_count = int(df.duplicated(subset=["warehouse", "sku"]).sum())
-        logger.info("Duplicate sku rows detected: %s", dup_count)
-        df = df.sort_index().drop_duplicates(subset=["warehouse", "sku"], keep="last")
-        logger.info("Rows after sku dedupe: %s", len(df))
+            logger.info(
+                "Dropping rows with empty canonical_sku after normalization: %s",
+                dropped,
+            )
+            df = df.loc[~empty_canonical].copy()
+        rows_long = len(df)
+        dup_count = int(df.duplicated(subset=["warehouse", "canonical_sku"]).sum())
+        logger.info("Duplicate canonical_sku rows detected: %s", dup_count)
+        df = df.sort_index().drop_duplicates(
+            subset=["warehouse", "canonical_sku"], keep="last"
+        )
+        logger.info("Rows after canonical_sku dedupe: %s", len(df))
+        df["sku"] = df["canonical_sku"]
         df["project_label"] = df["group_name"].map(_project_label_for_group)
         aggregated = _aggregate_daily(df)
 
@@ -708,157 +705,36 @@ def ingest_excel(
                 )
                 aggregated = aggregated.drop(columns=["price_existing"])
 
-        prev_date = session.scalar(
-            select(func.max(FactSnapshot.data_date))
-            .where(FactSnapshot.company == company)
-            .where(FactSnapshot.data_date < upload_date)
-        )
-        if prev_date is None:
-            merged = aggregated.copy()
-            merged["sold_qty"] = 0
-            merged["replenished_qty"] = 0
-        else:
-            prev_df = _load_prev_snapshot(session, company, prev_date, warehouses)
-            if is_alliance:
-                key_columns = ["warehouse", "sku", "manufacturer"]
-                prev_keys = prev_df[key_columns] if not prev_df.empty else prev_df
-                all_keys = pd.concat(
-                    [aggregated[key_columns], prev_keys],
-                    ignore_index=True,
-                ).drop_duplicates()
-                merged = all_keys.merge(aggregated, on=key_columns, how="left")
-                merged["stock_qty"] = merged["stock_qty"].fillna(0).astype(int)
-            else:
-                merged = aggregated.copy()
-
-            merged = merged.merge(
-                prev_df,
-                on=["warehouse", "sku", "manufacturer"],
-                how="left",
-                suffixes=("", "_prev"),
-            )
-            merged["stock_qty_prev"] = merged["stock_qty_prev"].fillna(0).astype(int)
-            merged["sold_qty"] = (
-                merged["stock_qty_prev"] - merged["stock_qty"]
-            ).clip(lower=0)
-            merged["replenished_qty"] = (
-                merged["stock_qty"] - merged["stock_qty_prev"]
-            ).clip(lower=0)
-            merged["sold_qty"] = merged["sold_qty"].astype(int)
-            merged["replenished_qty"] = merged["replenished_qty"].astype(int)
-
-        qa_report = _build_qa_report(merged)
-        qa_errors: list[dict[str, Any]] = []
-        negative_mask = (merged["sold_qty"] < 0) | (merged["replenished_qty"] < 0)
-        if negative_mask.any():
-            examples = (
-                merged.loc[
-                    negative_mask,
-                    [
-                        "warehouse",
-                        "sku",
-                        "manufacturer",
-                        "sold_qty",
-                        "replenished_qty",
-                    ],
-                ]
-                .head(10)
-                .to_dict("records")
-            )
-            qa_errors.append(
-                {
-                    "type": "negative_quantities",
-                    "count": int(negative_mask.sum()),
-                    "examples": examples,
-                }
-            )
-        simultaneous_mask = (merged["sold_qty"] > 0) & (
-            merged["replenished_qty"] > 0
-        )
-        if simultaneous_mask.any():
-            examples = (
-                merged.loc[
-                    simultaneous_mask,
-                    [
-                        "warehouse",
-                        "sku",
-                        "manufacturer",
-                        "sold_qty",
-                        "replenished_qty",
-                    ],
-                ]
-                .head(10)
-                .to_dict("records")
-            )
-            qa_errors.append(
-                {
-                    "type": "simultaneous_sold_replenished",
-                    "count": int(simultaneous_mask.sum()),
-                    "examples": examples,
-                }
-            )
-        if prev_date is not None:
-            balance = (
-                merged.groupby(["warehouse", "sku"], dropna=False)
-                .agg(
-                    prev_stock=("stock_qty_prev", "sum"),
-                    replenished=("replenished_qty", "sum"),
-                    sold=("sold_qty", "sum"),
-                    curr_stock=("stock_qty", "sum"),
-                )
-                .reset_index()
-            )
-            balance["expected_stock"] = (
-                balance["prev_stock"] + balance["replenished"] - balance["sold"]
-            )
-            mismatch = balance[balance["expected_stock"] != balance["curr_stock"]]
-            if not mismatch.empty:
-                examples = mismatch.head(10).to_dict("records")
-                qa_errors.append(
-                    {
-                        "type": "stock_balance_mismatch",
-                        "count": int(len(mismatch)),
-                        "examples": examples,
-                    }
-                )
-        if qa_errors:
-            logger.error("QA validation failed: %s", qa_errors)
-            raise IngestError(
-                "Проверка качества данных не пройдена.",
-                report={"qa_report": qa_report, "qa_errors": qa_errors},
-            )
-
-        merged_records = merged.rename(columns={"nomenclature": "name"})
+        merged_records = aggregated.rename(columns={"nomenclature": "name"})
         item_columns = [
-            "sku",
-            "manufacturer",
             "name",
             "group_name",
             "project_label",
+            "canonical_sku",
+            "sku_norm",
+            "mfg_sku_norm",
+            "manufacturer",
         ]
         if "brand" in merged_records.columns:
             item_columns.append("brand")
-        if "mfg_sku" in merged_records.columns:
-            item_columns.append("mfg_sku")
+        item_source = df.copy()
+        if "nomenclature" in item_source.columns and "name" not in item_source.columns:
+            item_source["name"] = item_source["nomenclature"]
+        item_columns = [column for column in item_columns if column in item_source.columns]
         item_records = (
-            merged_records[item_columns]
-            .drop_duplicates(subset=["sku"])
+            item_source[item_columns]
+            .sort_index()
+            .drop_duplicates(subset=["canonical_sku"], keep="last")
             .to_dict("records")
         )
         for record in item_records:
             record["company"] = company
-            record["canonical_sku"] = record.pop("sku")
-            record["sku_norm"] = _normalize_item_value(record["canonical_sku"])
-            record["mfg_sku_norm"] = _normalize_item_value(record.pop("mfg_sku", None))
-            record["manufacturer_norm"] = _normalize_item_value(
-                record.pop("manufacturer", None)
-            )
-            record["name"] = record.get("name")
-            record["brand"] = record.get("brand")
-            record["group_name"] = record.get("group_name")
-            record["project_label"] = record.get("project_label")
+            record["canonical_sku"] = record.pop("canonical_sku")
+            record["sku_norm"] = record.pop("sku_norm", None)
+            record["mfg_sku_norm"] = record.pop("mfg_sku_norm", None)
+            record["manufacturer_norm"] = record.pop("manufacturer", None)
 
-        item_skus = [record["canonical_sku"] for record in item_records]
+        item_skus = df["canonical_sku"].dropna().unique().tolist()
         if dry_run:
             item_map = {sku: idx for idx, sku in enumerate(item_skus, start=1)}
         else:
@@ -893,27 +769,65 @@ def ingest_excel(
                     "price": record.get("price"),
                 }
             )
-        snapshot_update_columns = ["stock_qty", "price"]
 
+        prev_date = session.scalar(
+            select(func.max(FactSnapshot.data_date))
+            .where(FactSnapshot.company == company)
+            .where(FactSnapshot.data_date < upload_date)
+        )
         delta_records = []
-        for record in merged_records[
-            ["warehouse", "sku", "sold_qty", "replenished_qty"]
-        ].to_dict("records"):
-            item_id = item_map.get(record["sku"])
-            if item_id is None:
-                continue
-            delta_records.append(
+        rows_changes = 0
+        if prev_date is not None:
+            prev_rows = session.execute(
+                select(
+                    FactSnapshot.warehouse,
+                    FactSnapshot.item_id,
+                    FactSnapshot.stock_qty,
+                )
+                .where(FactSnapshot.company == company)
+                .where(FactSnapshot.data_date == prev_date)
+            ).all()
+            prev_df = pd.DataFrame(
+                prev_rows, columns=["warehouse", "item_id", "stock_qty_prev"]
+            )
+            curr_df = merged_records[["warehouse", "sku", "stock_qty"]].copy()
+            curr_df["item_id"] = curr_df["sku"].map(item_map)
+            curr_df = curr_df.dropna(subset=["item_id"]).copy()
+            curr_df["item_id"] = curr_df["item_id"].astype(int)
+            curr_df = curr_df.rename(columns={"stock_qty": "stock_qty_curr"})
+            merged_delta = prev_df.merge(
+                curr_df,
+                on=["warehouse", "item_id"],
+                how="outer",
+            )
+            merged_delta["stock_qty_prev"] = (
+                merged_delta["stock_qty_prev"].fillna(0).astype(int)
+            )
+            merged_delta["stock_qty_curr"] = (
+                merged_delta["stock_qty_curr"].fillna(0).astype(int)
+            )
+            merged_delta["sold_qty"] = (
+                merged_delta["stock_qty_prev"] - merged_delta["stock_qty_curr"]
+            ).clip(lower=0)
+            merged_delta["replenished_qty"] = (
+                merged_delta["stock_qty_curr"] - merged_delta["stock_qty_prev"]
+            ).clip(lower=0)
+            changes = merged_delta[
+                (merged_delta["sold_qty"] > 0)
+                | (merged_delta["replenished_qty"] > 0)
+            ]
+            delta_records = [
                 {
                     "data_date": upload_date,
                     "company": company,
                     "warehouse": record["warehouse"],
-                    "item_id": item_id,
-                    "sold_qty": record["sold_qty"],
-                    "replenished_qty": record["replenished_qty"],
+                    "item_id": int(record["item_id"]),
+                    "sold_qty": int(record["sold_qty"]),
+                    "replenished_qty": int(record["replenished_qty"]),
                 }
-            )
-        delta_update_columns = ["sold_qty", "replenished_qty"]
-        rows_delta = 0 if prev_date is None else len(delta_records)
+                for record in changes.to_dict("records")
+            ]
+            rows_changes = len(delta_records)
 
         if not dry_run:
             ingest_run_payload = {
@@ -951,35 +865,13 @@ def ingest_excel(
                         .where(FactDeltaChange.company == company)
                         .where(FactDeltaChange.data_date == upload_date)
                     )
-                    _upsert_batches(
-                        session,
-                        FactSnapshot,
-                        snapshot_records,
-                        snapshot_update_columns,
-                        ["company", "data_date", "warehouse", "item_id"],
-                    )
-                    _upsert_batches(
-                        session,
-                        FactDeltaChange,
-                        delta_records,
-                        delta_update_columns,
-                        ["company", "data_date", "warehouse", "item_id"],
-                    )
+                    _insert_batches(session, FactSnapshot, snapshot_records)
+                    if prev_date is not None:
+                        _insert_batches(session, FactDeltaChange, delta_records)
                 elif mode == "merge":
-                    _upsert_batches(
-                        session,
-                        FactSnapshot,
-                        snapshot_records,
-                        snapshot_update_columns,
-                        ["company", "data_date", "warehouse", "item_id"],
-                    )
-                    _upsert_batches(
-                        session,
-                        FactDeltaChange,
-                        delta_records,
-                        delta_update_columns,
-                        ["company", "data_date", "warehouse", "item_id"],
-                    )
+                    _insert_batches(session, FactSnapshot, snapshot_records)
+                    if prev_date is not None:
+                        _insert_batches(session, FactDeltaChange, delta_records)
                 else:
                     if warehouses:
                         session.execute(
@@ -994,25 +886,14 @@ def ingest_excel(
                             .where(FactDeltaChange.data_date == upload_date)
                             .where(FactDeltaChange.warehouse.in_(warehouses))
                         )
-                    _upsert_batches(
-                        session,
-                        FactSnapshot,
-                        snapshot_records,
-                        snapshot_update_columns,
-                        ["company", "data_date", "warehouse", "item_id"],
-                    )
-                    _upsert_batches(
-                        session,
-                        FactDeltaChange,
-                        delta_records,
-                        delta_update_columns,
-                        ["company", "data_date", "warehouse", "item_id"],
-                    )
+                    _insert_batches(session, FactSnapshot, snapshot_records)
+                    if prev_date is not None:
+                        _insert_batches(session, FactDeltaChange, delta_records)
                 ingest_run.status = "ok"
                 ingest_run.rows_read = int(validation_report.get("rows_read", 0))
-                ingest_run.rows_long = len(snapshot_records)
+                ingest_run.rows_long = rows_long
                 ingest_run.rows_snapshot = len(snapshot_records)
-                ingest_run.rows_changes = rows_delta
+                ingest_run.rows_changes = rows_changes
                 duration = datetime.utcnow() - started_at
                 ingest_run.duration_ms = int(duration.total_seconds() * 1000)
 
@@ -1080,14 +961,18 @@ def ingest_excel(
             session.commit()
 
         logger.info("Ingest complete: %s rows", len(snapshot_records))
+        duration = datetime.utcnow() - started_at
         return {
             "status": "ok",
             "company": company,
             "data_date": upload_date.isoformat(),
             "prev_date": prev_date.isoformat() if prev_date else None,
+            "rows_read": int(validation_report.get("rows_read", 0)),
             "rows_snapshot": len(snapshot_records),
-            "rows_delta": rows_delta,
-            "rows_long": len(snapshot_records),
+            "rows_changes": rows_changes,
+            "rows_long": rows_long,
+            "dup_count": dup_count,
+            "duration_ms": int(duration.total_seconds() * 1000),
         }
     except Exception as exc:
         session.rollback()
@@ -1113,10 +998,10 @@ def ingest_excel(
                 if "validation_report" in locals():
                     existing_run.rows_read = int(validation_report.get("rows_read", 0))
                 if "snapshot_records" in locals():
-                    existing_run.rows_long = len(snapshot_records)
+                    existing_run.rows_long = rows_long
                     existing_run.rows_snapshot = len(snapshot_records)
-                if "rows_delta" in locals():
-                    existing_run.rows_changes = rows_delta
+                if "rows_changes" in locals():
+                    existing_run.rows_changes = rows_changes
                 duration = datetime.utcnow() - started_at
                 existing_run.duration_ms = int(duration.total_seconds() * 1000)
             session.commit()

@@ -108,15 +108,12 @@ def index(request: Request):
 @app.post("/upload")
 def upload_file(
     upload_date: date = Form(...),
-    mode: Literal["reject", "merge", "replace"] = Form("reject"),
-    replace: bool = Query(False),
+    mode: Literal["reject", "bootstrap"] = Form("reject"),
     dry_run: bool = Query(False),
     company: str | None = Form(None),
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
 ):
-    if replace:
-        mode = "replace"
     current_db = session.execute(text("select current_database()")).scalar()
     logger.debug("Current database: %s", current_db)
     try:

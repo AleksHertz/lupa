@@ -6,11 +6,11 @@ from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Literal
 
 import pandas as pd
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.models import FactDeltaChange, FactSnapshot, IngestRun, Item
+from app.models import FactDeltaChange, FactSnapshot, IngestRunV2, Item
 
 logger = logging.getLogger(__name__)
 _BULK_BATCH_SIZE = 20000
@@ -539,59 +539,6 @@ def _load_prev_snapshot(
     )
 
 
-def _load_existing_snapshot(
-    session: Session,
-    company: str,
-    upload_date: date,
-    warehouses: list[str],
-) -> pd.DataFrame:
-    if not warehouses:
-        return pd.DataFrame(columns=["warehouse", "sku", "manufacturer", "price"])
-    stmt = (
-        select(
-            FactSnapshot.warehouse,
-            Item.canonical_sku,
-            Item.manufacturer_norm,
-            FactSnapshot.price,
-        )
-        .join(Item, Item.id == FactSnapshot.item_id)
-        .where(FactSnapshot.company == company)
-        .where(FactSnapshot.data_date == upload_date)
-        .where(FactSnapshot.warehouse.in_(warehouses))
-    )
-    rows = session.execute(stmt).all()
-    if not rows:
-        return pd.DataFrame(columns=["warehouse", "sku", "manufacturer", "price"])
-    return pd.DataFrame(rows, columns=["warehouse", "sku", "manufacturer", "price"])
-
-
-def _load_existing_snapshot_map(
-    session: Session,
-    company: str,
-    upload_date: date,
-) -> dict[tuple[str, str, str | None], dict[str, object]]:
-    stmt = (
-        select(
-            FactSnapshot.item_id,
-            FactSnapshot.warehouse,
-            Item.canonical_sku,
-            Item.manufacturer_norm,
-            FactSnapshot.price,
-        )
-        .join(Item, Item.id == FactSnapshot.item_id)
-        .where(FactSnapshot.company == company)
-        .where(FactSnapshot.data_date == upload_date)
-    )
-    rows = session.execute(stmt).all()
-    return {
-        (row.warehouse, row.canonical_sku, row.manufacturer_norm): {
-            "item_id": row.item_id,
-            "price": row.price,
-        }
-        for row in rows
-    }
-
-
 def _load_existing_delta_map(
     session: Session,
     company: str,
@@ -621,7 +568,7 @@ def ingest_excel(
     file_bytes: bytes,
     company: str | None = None,
     file_name: str | None = None,
-    mode: Literal["reject", "merge", "replace"] = "reject",
+    mode: Literal["reject", "bootstrap"] = "reject",
     dry_run: bool = False,
 ) -> dict[str, object]:
     normalized_company = company.strip().lower() if company else None
@@ -692,27 +639,20 @@ def ingest_excel(
             select(FactSnapshot.item_id)
             .where(FactSnapshot.company == company)
             .where(FactSnapshot.data_date == upload_date)
+            .limit(1)
         )
-        if existing_snapshot_date and mode != "replace":
-            raise IngestConflict(
-                "Данные за эту дату уже загружены. "
-                "Передайте replace=true, чтобы перезаписать."
-            )
-
-        existing = _load_existing_snapshot(session, company, upload_date, warehouses)
-        if not existing.empty and mode == "merge":
-            existing = existing.dropna(subset=["price"])
-            if not existing.empty:
-                aggregated = aggregated.merge(
-                    existing,
-                    on=["warehouse", "sku", "manufacturer"],
-                    how="left",
-                    suffixes=("", "_existing"),
-                )
-                aggregated["price"] = aggregated["price_existing"].combine_first(
-                    aggregated["price"]
-                )
-                aggregated = aggregated.drop(columns=["price_existing"])
+        existing_v2_ok = session.scalar(
+            select(IngestRunV2.id)
+            .where(IngestRunV2.company == company)
+            .where(IngestRunV2.data_date == upload_date)
+            .where(IngestRunV2.status == "ok")
+            .limit(1)
+        )
+        if mode == "reject":
+            if existing_snapshot_date or existing_v2_ok:
+                raise IngestConflict("date already ingested")
+        elif existing_snapshot_date:
+            raise IngestConflict("date already ingested")
 
         merged_records = aggregated.rename(columns={"nomenclature": "name"})
         item_columns = [
@@ -750,12 +690,6 @@ def ingest_excel(
             _upsert_items(session, item_records)
             item_map = _load_item_map(session, company, item_skus)
 
-        snapshot_existing_map = None
-        if mode == "merge":
-            snapshot_existing_map = _load_existing_snapshot_map(
-                session, company, upload_date
-            )
-
         snapshot_records = []
         for record in merged_records[
             ["warehouse", "sku", "manufacturer", "stock_qty", "price"]
@@ -763,11 +697,6 @@ def ingest_excel(
             item_id = item_map.get(record["sku"])
             if item_id is None:
                 continue
-            if snapshot_existing_map:
-                key = (record["warehouse"], record["sku"], record["manufacturer"])
-                existing_row = snapshot_existing_map.get(key)
-                if existing_row and existing_row["price"] is not None:
-                    record["price"] = existing_row["price"]
             snapshot_records.append(
                 {
                     "data_date": upload_date,
@@ -846,16 +775,16 @@ def ingest_excel(
                 "data_date": upload_date,
             }
             existing_hash = session.scalar(
-                select(IngestRun.id)
-                .where(IngestRun.company == company)
-                .where(IngestRun.file_hash == file_hash)
+                select(IngestRunV2.id)
+                .where(IngestRunV2.company == company)
+                .where(IngestRunV2.file_hash == file_hash)
             )
             if existing_hash:
                 raise IngestConflict("Этот файл уже был загружен ранее.")
 
             with session.begin_nested():
                 # Use SAVEPOINT to stay compatible with SQLAlchemy 2.0 nested transactions.
-                ingest_run = IngestRun(
+                ingest_run = IngestRunV2(
                     **ingest_run_payload,
                     status="failed",
                 )
@@ -863,41 +792,9 @@ def ingest_excel(
                 session.flush()
                 ingest_run_id = ingest_run.id
 
-                if mode == "replace":
-                    session.execute(
-                        delete(FactSnapshot)
-                        .where(FactSnapshot.company == company)
-                        .where(FactSnapshot.data_date == upload_date)
-                    )
-                    session.execute(
-                        delete(FactDeltaChange)
-                        .where(FactDeltaChange.company == company)
-                        .where(FactDeltaChange.data_date == upload_date)
-                    )
-                    _insert_batches(session, FactSnapshot, snapshot_records)
-                    if prev_date is not None:
-                        _insert_batches(session, FactDeltaChange, delta_records)
-                elif mode == "merge":
-                    _insert_batches(session, FactSnapshot, snapshot_records)
-                    if prev_date is not None:
-                        _insert_batches(session, FactDeltaChange, delta_records)
-                else:
-                    if warehouses:
-                        session.execute(
-                            delete(FactSnapshot)
-                            .where(FactSnapshot.company == company)
-                            .where(FactSnapshot.data_date == upload_date)
-                            .where(FactSnapshot.warehouse.in_(warehouses))
-                        )
-                        session.execute(
-                            delete(FactDeltaChange)
-                            .where(FactDeltaChange.company == company)
-                            .where(FactDeltaChange.data_date == upload_date)
-                            .where(FactDeltaChange.warehouse.in_(warehouses))
-                        )
-                    _insert_batches(session, FactSnapshot, snapshot_records)
-                    if prev_date is not None:
-                        _insert_batches(session, FactDeltaChange, delta_records)
+                _insert_batches(session, FactSnapshot, snapshot_records)
+                if prev_date is not None:
+                    _insert_batches(session, FactDeltaChange, delta_records)
                 ingest_run.status = "ok"
                 ingest_run.rows_read = int(validation_report.get("rows_read", 0))
                 ingest_run.rows_long = rows_long
@@ -921,15 +818,15 @@ def ingest_excel(
             if ingest_run_id is not None:
                 ingest_run_count_query = (
                     select(func.count())
-                    .select_from(IngestRun)
-                    .where(IngestRun.id == ingest_run_id)
+                    .select_from(IngestRunV2)
+                    .where(IngestRunV2.id == ingest_run_id)
                 )
             else:
                 ingest_run_count_query = (
                     select(func.count())
-                    .select_from(IngestRun)
-                    .where(IngestRun.company == company)
-                    .where(IngestRun.data_date == upload_date)
+                    .select_from(IngestRunV2)
+                    .where(IngestRunV2.company == company)
+                    .where(IngestRunV2.data_date == upload_date)
                 )
             ingest_run_count = session.scalar(ingest_run_count_query)
 
@@ -950,7 +847,7 @@ def ingest_excel(
                 upload_date,
             )
             logger.info(
-                "Persisted ingest_runs rows: %s for %s/%s",
+                "Persisted ingest_runs_v2 rows: %s for %s/%s",
                 ingest_run_count,
                 company,
                 upload_date,
@@ -990,9 +887,9 @@ def ingest_excel(
                 # Use SAVEPOINT to stay compatible with SQLAlchemy 2.0 nested transactions.
                 existing_run = None
                 if ingest_run_id is not None:
-                    existing_run = session.get(IngestRun, ingest_run_id)
+                    existing_run = session.get(IngestRunV2, ingest_run_id)
                 if existing_run is None:
-                    existing_run = IngestRun(
+                    existing_run = IngestRunV2(
                         **ingest_run_payload,
                         status="failed",
                     )

@@ -39,6 +39,7 @@ uvicorn app.main:app --reload
 3. Залейте репозиторий в Railway — сборка идёт через Dockerfile.
 4. В Railway откройте Settings → Pre-deploy Command и задайте:
    `python -m alembic upgrade head`
+   Railway Pre-deploy Command = python -m alembic upgrade head
 5. После pre-deploy Railway запускает приложение обычной командой из Dockerfile
    (через `uvicorn`), отдельный доступ к Shell не требуется.
 

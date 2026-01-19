@@ -1,4 +1,3 @@
-import hashlib
 import io
 import logging
 import re
@@ -10,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.models import FactDeltaChange, FactSnapshot, IngestRunV2, Item
+from app.models import FactDeltaChange, FactSnapshot, Item
 
 logger = logging.getLogger(__name__)
 _BULK_BATCH_SIZE = 20000
@@ -457,13 +456,14 @@ def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
     df["stock_qty"] = pd.to_numeric(df["stock_qty"], errors="coerce").fillna(0).astype(int)
     df["price"] = pd.to_numeric(df["price"], errors="coerce")
     df = df.sort_index()
-    keys = ["warehouse", "sku", "manufacturer"]
+    keys = ["warehouse", "sku"]
     aggregations: dict[str, tuple[str, str]] = {
         "stock_qty": ("stock_qty", "last"),
         "price": ("price", "last"),
         "nomenclature": ("nomenclature", "first"),
         "group_name": ("group_name", "first"),
         "project_label": ("project_label", "first"),
+        "manufacturer": ("manufacturer", "first"),
     }
     if "mfg_sku" in df.columns:
         aggregations["mfg_sku"] = ("mfg_sku", "first")
@@ -579,9 +579,6 @@ def ingest_excel(
         if parsed_date is not None:
             upload_date = parsed_date
 
-    file_hash = hashlib.sha256(file_bytes).hexdigest()
-    ingest_run_id: int | None = None
-    ingest_run_payload: dict[str, object] | None = None
     started_at = datetime.utcnow()
     try:
         logger.info("Starting ingest for %s", upload_date)
@@ -608,7 +605,6 @@ def ingest_excel(
             df["mfg_sku_norm"] = df["mfg_sku"].map(_normalize_item_value)
         else:
             df["mfg_sku_norm"] = None
-        df.loc[df["mfg_sku_norm"].isna(), "mfg_sku_norm"] = df["sku_norm"]
         df.loc[df["sku_norm"].isna(), "sku_norm"] = df["mfg_sku_norm"]
         df["canonical_sku"] = df["mfg_sku_norm"].where(
             df["mfg_sku_norm"].notna(), df["sku_norm"]
@@ -641,15 +637,8 @@ def ingest_excel(
             .where(FactSnapshot.data_date == upload_date)
             .limit(1)
         )
-        existing_v2_ok = session.scalar(
-            select(IngestRunV2.id)
-            .where(IngestRunV2.company == company)
-            .where(IngestRunV2.data_date == upload_date)
-            .where(IngestRunV2.status == "ok")
-            .limit(1)
-        )
         if mode == "reject":
-            if existing_snapshot_date or existing_v2_ok:
+            if existing_snapshot_date:
                 raise IngestConflict("date already ingested")
         elif existing_snapshot_date:
             raise IngestConflict("date already ingested")
@@ -768,40 +757,11 @@ def ingest_excel(
             rows_changes = len(delta_records)
 
         if not dry_run:
-            ingest_run_payload = {
-                "company": company,
-                "file_name": file_name or "unknown",
-                "file_hash": file_hash,
-                "data_date": upload_date,
-            }
-            existing_hash = session.scalar(
-                select(IngestRunV2.id)
-                .where(IngestRunV2.company == company)
-                .where(IngestRunV2.file_hash == file_hash)
-            )
-            if existing_hash:
-                raise IngestConflict("Этот файл уже был загружен ранее.")
-
             with session.begin_nested():
                 # Use SAVEPOINT to stay compatible with SQLAlchemy 2.0 nested transactions.
-                ingest_run = IngestRunV2(
-                    **ingest_run_payload,
-                    status="failed",
-                )
-                session.add(ingest_run)
-                session.flush()
-                ingest_run_id = ingest_run.id
-
                 _insert_batches(session, FactSnapshot, snapshot_records)
                 if prev_date is not None:
                     _insert_batches(session, FactDeltaChange, delta_records)
-                ingest_run.status = "ok"
-                ingest_run.rows_read = int(validation_report.get("rows_read", 0))
-                ingest_run.rows_long = rows_long
-                ingest_run.rows_snapshot = len(snapshot_records)
-                ingest_run.rows_changes = rows_changes
-                duration = datetime.utcnow() - started_at
-                ingest_run.duration_ms = int(duration.total_seconds() * 1000)
 
             snapshot_count = session.scalar(
                 select(func.count())
@@ -815,24 +775,9 @@ def ingest_excel(
                 .where(FactDeltaChange.company == company)
                 .where(FactDeltaChange.data_date == upload_date)
             )
-            if ingest_run_id is not None:
-                ingest_run_count_query = (
-                    select(func.count())
-                    .select_from(IngestRunV2)
-                    .where(IngestRunV2.id == ingest_run_id)
-                )
-            else:
-                ingest_run_count_query = (
-                    select(func.count())
-                    .select_from(IngestRunV2)
-                    .where(IngestRunV2.company == company)
-                    .where(IngestRunV2.data_date == upload_date)
-                )
-            ingest_run_count = session.scalar(ingest_run_count_query)
 
             snapshot_count = int(snapshot_count or 0)
             delta_count = int(delta_count or 0)
-            ingest_run_count = int(ingest_run_count or 0)
 
             logger.info(
                 "Persisted fact_snapshot rows: %s for %s/%s",
@@ -846,20 +791,11 @@ def ingest_excel(
                 company,
                 upload_date,
             )
-            logger.info(
-                "Persisted ingest_runs_v2 rows: %s for %s/%s",
-                ingest_run_count,
-                company,
-                upload_date,
-            )
 
             snapshot_expected = len(snapshot_records) > 0
             delta_expected = len(delta_records) > 0
-            ingest_run_expected = True
-            if (
-                (snapshot_expected and snapshot_count == 0)
-                or (delta_expected and delta_count == 0)
-                or (ingest_run_expected and ingest_run_count == 0)
+            if (snapshot_expected and snapshot_count == 0) or (
+                delta_expected and delta_count == 0
             ):
                 raise IngestPersistenceError(
                     "Ingest reported success but no rows persisted"
@@ -882,33 +818,4 @@ def ingest_excel(
         }
     except Exception as exc:
         session.rollback()
-        if ingest_run_payload is not None:
-            with session.begin_nested():
-                # Use SAVEPOINT to stay compatible with SQLAlchemy 2.0 nested transactions.
-                existing_run = None
-                if ingest_run_id is not None:
-                    existing_run = session.get(IngestRunV2, ingest_run_id)
-                if existing_run is None:
-                    existing_run = IngestRunV2(
-                        **ingest_run_payload,
-                        status="failed",
-                    )
-                    if ingest_run_id is not None:
-                        existing_run.id = ingest_run_id
-                    session.add(existing_run)
-                error_message = str(exc)
-                if len(error_message) > 4000:
-                    error_message = error_message[:4000] + "…(truncated)"
-                existing_run.error_message = error_message
-                existing_run.status = "failed"
-                if "validation_report" in locals():
-                    existing_run.rows_read = int(validation_report.get("rows_read", 0))
-                if "snapshot_records" in locals():
-                    existing_run.rows_long = rows_long
-                    existing_run.rows_snapshot = len(snapshot_records)
-                if "rows_changes" in locals():
-                    existing_run.rows_changes = rows_changes
-                duration = datetime.utcnow() - started_at
-                existing_run.duration_ms = int(duration.total_seconds() * 1000)
-            session.commit()
         raise

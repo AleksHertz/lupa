@@ -968,11 +968,11 @@ def ingest_excel(
             "data_date": upload_date.isoformat(),
             "prev_date": prev_date.isoformat() if prev_date else None,
             "rows_read": int(validation_report.get("rows_read", 0)),
-            "rows_snapshot": len(snapshot_records),
-            "rows_changes": rows_changes,
             "rows_long": rows_long,
             "dup_count": dup_count,
             "duration_ms": int(duration.total_seconds() * 1000),
+            "snapshots": len(snapshot_records),
+            "deltas": rows_changes,
         }
     except Exception as exc:
         session.rollback()

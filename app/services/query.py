@@ -23,6 +23,29 @@ def _series_cache_key(
     return (sku, warehouses, manufacturer, project_label, company, date_from, date_to)
 
 
+def _series_item_ids_stmt(
+    sku: str | None,
+    manufacturer: str | None,
+    project_label: str | None,
+    company: str | None,
+):
+    stmt = select(Item.id)
+    if sku:
+        sku_filter = or_(
+            Item.canonical_sku == sku,
+            Item.sku_norm.ilike(f"%{sku}%"),
+            Item.name.ilike(f"%{sku}%"),
+        )
+        stmt = stmt.where(sku_filter)
+    if manufacturer:
+        stmt = stmt.where(Item.manufacturer_norm == manufacturer)
+    if project_label:
+        stmt = stmt.where(Item.project_label == project_label)
+    if company:
+        stmt = stmt.where(Item.company == company)
+    return stmt
+
+
 def get_series(
     session: Session,
     sku: str | None,
@@ -46,7 +69,6 @@ def get_series(
             func.sum(FactDeltaChange.sold_qty).label("sold_qty"),
             func.sum(FactDeltaChange.replenished_qty).label("replenished_qty"),
         )
-        .join(Item, Item.id == FactDeltaChange.item_id)
         .where(FactDeltaChange.data_date >= date_from)
         .where(FactDeltaChange.data_date <= date_to)
         .group_by(FactDeltaChange.data_date)
@@ -58,34 +80,26 @@ def get_series(
             func.avg(FactSnapshot.price).label("price"),
             func.sum(FactSnapshot.stock_qty).label("stock_qty"),
         )
-        .join(Item, Item.id == FactSnapshot.item_id)
         .where(FactSnapshot.data_date >= date_from)
         .where(FactSnapshot.data_date <= date_to)
         .group_by(FactSnapshot.data_date)
         .order_by(FactSnapshot.data_date)
     )
-    if sku:
-        sku_filter = or_(
-            Item.canonical_sku == sku,
-            Item.sku_norm.ilike(f"%{sku}%"),
-            Item.name.ilike(f"%{sku}%"),
+    if sku or manufacturer or project_label or company:
+        item_ids_stmt = _series_item_ids_stmt(
+            sku=sku,
+            manufacturer=manufacturer,
+            project_label=project_label,
+            company=company,
         )
-        delta_stmt = delta_stmt.where(sku_filter)
-        snapshot_stmt = snapshot_stmt.where(sku_filter)
+        delta_stmt = delta_stmt.where(FactDeltaChange.item_id.in_(item_ids_stmt))
+        snapshot_stmt = snapshot_stmt.where(FactSnapshot.item_id.in_(item_ids_stmt))
     if warehouses:
         delta_stmt = delta_stmt.where(FactDeltaChange.warehouse.in_(warehouses))
         snapshot_stmt = snapshot_stmt.where(FactSnapshot.warehouse.in_(warehouses))
-    if manufacturer:
-        delta_stmt = delta_stmt.where(Item.manufacturer_norm == manufacturer)
-        snapshot_stmt = snapshot_stmt.where(Item.manufacturer_norm == manufacturer)
-    if project_label:
-        delta_stmt = delta_stmt.where(Item.project_label == project_label)
-        snapshot_stmt = snapshot_stmt.where(Item.project_label == project_label)
     if company:
         delta_stmt = delta_stmt.where(FactDeltaChange.company == company)
         snapshot_stmt = snapshot_stmt.where(FactSnapshot.company == company)
-        delta_stmt = delta_stmt.where(Item.company == company)
-        snapshot_stmt = snapshot_stmt.where(Item.company == company)
 
     delta_rows = session.execute(delta_stmt).all()
     snapshot_rows = session.execute(snapshot_stmt).all()

@@ -39,7 +39,11 @@ def _normalize_query_string(query_string: bytes) -> bytes:
     if not query_string:
         return query_string
     params = parse_qsl(query_string.decode(), keep_blank_values=True)
-    filtered = [(key, value) for key, value in params if value != ""]
+    filtered = [
+        (key, value.strip())
+        for key, value in params
+        if value is not None and value.strip() != ""
+    ]
     if len(filtered) == len(params):
         return query_string
     return urlencode(filtered, doseq=True).encode()

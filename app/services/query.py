@@ -2,7 +2,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from cachetools import TTLCache
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import FactDeltaChange, FactSnapshot, Item
@@ -65,8 +65,13 @@ def get_series(
         .order_by(FactSnapshot.data_date)
     )
     if sku:
-        delta_stmt = delta_stmt.where(Item.canonical_sku == sku)
-        snapshot_stmt = snapshot_stmt.where(Item.canonical_sku == sku)
+        sku_filter = or_(
+            Item.canonical_sku == sku,
+            Item.sku_norm.ilike(f"%{sku}%"),
+            Item.name.ilike(f"%{sku}%"),
+        )
+        delta_stmt = delta_stmt.where(sku_filter)
+        snapshot_stmt = snapshot_stmt.where(sku_filter)
     if warehouses:
         delta_stmt = delta_stmt.where(FactDeltaChange.warehouse.in_(warehouses))
         snapshot_stmt = snapshot_stmt.where(FactSnapshot.warehouse.in_(warehouses))

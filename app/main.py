@@ -1,6 +1,7 @@
 import logging
 from datetime import date
 from typing import Literal
+from urllib.parse import parse_qsl, urlencode
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,6 +35,16 @@ def _normalize_csv_list(values: list[str] | None) -> list[str] | None:
     return expanded or None
 
 
+def _normalize_query_string(query_string: bytes) -> bytes:
+    if not query_string:
+        return query_string
+    params = parse_qsl(query_string.decode(), keep_blank_values=True)
+    filtered = [(key, value) for key, value in params if value != ""]
+    if len(filtered) == len(params):
+        return query_string
+    return urlencode(filtered, doseq=True).encode()
+
+
 def _is_missing_schema_error(exc: Exception) -> bool:
     if isinstance(exc, NoSuchTableError):
         return True
@@ -60,6 +71,14 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+
+@app.middleware("http")
+async def normalize_query_params(request: Request, call_next):
+    request.scope["query_string"] = _normalize_query_string(
+        request.scope.get("query_string", b"")
+    )
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -205,7 +224,7 @@ def health():
 
 @app.get("/health/db")
 def health_db(session: Session = Depends(get_session)):
-    tables_to_check = ("daily_snapshot", "daily_delta", "ingest_run")
+    tables_to_check = ("items", "fact_snapshot", "fact_delta_changes", "ingest_runs")
     try:
         session.execute(text("select 1"))
         tables = {

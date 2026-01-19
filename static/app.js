@@ -145,10 +145,16 @@ function collectFilters() {
   };
 }
 
+function getUploadMode() {
+  const mode = new URLSearchParams(window.location.search).get("mode");
+  return mode === "bootstrap" ? "bootstrap" : "reject";
+}
+
 uploadForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const formData = new FormData(uploadForm);
   formData.set("company", getSelectedCompany());
+  formData.set("mode", getUploadMode());
   setStatus("Загрузка...", false);
   const result = await safeFetch(buildUrl("/upload"), {
     method: "POST",

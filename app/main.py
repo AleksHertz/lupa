@@ -3,15 +3,17 @@ from datetime import date
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode
 
+import anyio
+
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import NoSuchTableError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import text
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 
 from app.db import get_session
 from app.services.ingest import (
@@ -91,6 +93,12 @@ async def log_requests(request: Request, call_next):
     logger.info("Request URL: %s; Origin: %s", request.url, origin)
     try:
         response = await call_next(request)
+    except (anyio.EndOfStream, ClientDisconnect):
+        logger.info("Client disconnected during request body read: %s", request.url)
+        return JSONResponse(
+            status_code=499,
+            content={"detail": "Client disconnected"},
+        )
     except Exception:
         logger.exception("Unhandled exception for %s", request.url)
         raise

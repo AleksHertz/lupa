@@ -10,7 +10,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.models import DailyDelta, DailySnapshot, IngestRun
+from app.models import FactDeltaChange, FactSnapshot, IngestRun, Item
 
 logger = logging.getLogger(__name__)
 _BULK_BATCH_SIZE = 10000
@@ -19,6 +19,13 @@ _BULK_BATCH_SIZE = 10000
 def _normalize_header(value: str) -> str:
     normalized = value.strip().lower().replace("ё", "е")
     return " ".join(normalized.split())
+
+
+def _normalize_item_value(value: str | None) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    normalized = re.sub(r"\s+", " ", str(value).strip().lower())
+    return normalized or None
 
 
 PROJECT_GROUPS = {
@@ -386,20 +393,61 @@ def _chunk_records(records: list[dict[str, Any]], batch_size: int) -> list[list[
 
 def _upsert_batches(
     session: Session,
-    model: type[DailySnapshot] | type[DailyDelta],
+    model: type[FactSnapshot] | type[FactDeltaChange],
     records: list[dict[str, Any]],
     update_columns: list[str],
+    index_elements: list[str],
 ) -> None:
     if not records:
         return
     table = model.__table__
     insert_stmt = insert(table)
     stmt = insert_stmt.on_conflict_do_update(
-        index_elements=["company", "data_date", "warehouse", "sku"],
+        index_elements=index_elements,
         set_={column: getattr(insert_stmt.excluded, column) for column in update_columns},
     )
     for batch in _chunk_records(records, _BULK_BATCH_SIZE):
         session.execute(stmt, batch)
+
+
+def _upsert_items(session: Session, records: list[dict[str, Any]]) -> None:
+    if not records:
+        return
+    table = Item.__table__
+    insert_stmt = insert(table)
+    update_columns = [
+        "sku_norm",
+        "mfg_sku_norm",
+        "manufacturer_norm",
+        "name",
+        "brand",
+        "group_name",
+        "project_label",
+        "updated_at",
+    ]
+    stmt = insert_stmt.on_conflict_do_update(
+        index_elements=["company", "canonical_sku"],
+        set_={
+            column: (
+                func.now() if column == "updated_at" else getattr(insert_stmt.excluded, column)
+            )
+            for column in update_columns
+        },
+    )
+    for batch in _chunk_records(records, _BULK_BATCH_SIZE):
+        session.execute(stmt, batch)
+
+
+def _load_item_map(session: Session, company: str, skus: list[str]) -> dict[str, int]:
+    if not skus:
+        return {}
+    stmt = (
+        select(Item.id, Item.canonical_sku)
+        .where(Item.company == company)
+        .where(Item.canonical_sku.in_(skus))
+    )
+    rows = session.execute(stmt).all()
+    return {row.canonical_sku: row.id for row in rows}
 
 
 def _aggregate_daily(df: pd.DataFrame) -> pd.DataFrame:
@@ -473,19 +521,22 @@ def _load_prev_snapshot(
         return pd.DataFrame(columns=["warehouse", "sku", "manufacturer", "stock_qty"])
     stmt = (
         select(
-            DailySnapshot.warehouse,
-            DailySnapshot.sku,
-            DailySnapshot.manufacturer,
-            DailySnapshot.stock_qty,
+            FactSnapshot.warehouse,
+            Item.canonical_sku,
+            Item.manufacturer_norm,
+            FactSnapshot.stock_qty,
         )
-        .where(DailySnapshot.company == company)
-        .where(DailySnapshot.data_date == prev_date)
-        .where(DailySnapshot.warehouse.in_(warehouses))
+        .join(Item, Item.id == FactSnapshot.item_id)
+        .where(FactSnapshot.company == company)
+        .where(FactSnapshot.data_date == prev_date)
+        .where(FactSnapshot.warehouse.in_(warehouses))
     )
     rows = session.execute(stmt).all()
     if not rows:
         return pd.DataFrame(columns=["warehouse", "sku", "manufacturer", "stock_qty"])
-    return pd.DataFrame(rows, columns=["warehouse", "sku", "manufacturer", "stock_qty"])
+    return pd.DataFrame(
+        rows, columns=["warehouse", "sku", "manufacturer", "stock_qty"]
+    )
 
 
 def _load_existing_snapshot(
@@ -498,14 +549,15 @@ def _load_existing_snapshot(
         return pd.DataFrame(columns=["warehouse", "sku", "manufacturer", "price"])
     stmt = (
         select(
-            DailySnapshot.warehouse,
-            DailySnapshot.sku,
-            DailySnapshot.manufacturer,
-            DailySnapshot.price,
+            FactSnapshot.warehouse,
+            Item.canonical_sku,
+            Item.manufacturer_norm,
+            FactSnapshot.price,
         )
-        .where(DailySnapshot.company == company)
-        .where(DailySnapshot.data_date == upload_date)
-        .where(DailySnapshot.warehouse.in_(warehouses))
+        .join(Item, Item.id == FactSnapshot.item_id)
+        .where(FactSnapshot.company == company)
+        .where(FactSnapshot.data_date == upload_date)
+        .where(FactSnapshot.warehouse.in_(warehouses))
     )
     rows = session.execute(stmt).all()
     if not rows:
@@ -520,19 +572,20 @@ def _load_existing_snapshot_map(
 ) -> dict[tuple[str, str, str | None], dict[str, object]]:
     stmt = (
         select(
-            DailySnapshot.id,
-            DailySnapshot.warehouse,
-            DailySnapshot.sku,
-            DailySnapshot.manufacturer,
-            DailySnapshot.price,
+            FactSnapshot.item_id,
+            FactSnapshot.warehouse,
+            Item.canonical_sku,
+            Item.manufacturer_norm,
+            FactSnapshot.price,
         )
-        .where(DailySnapshot.company == company)
-        .where(DailySnapshot.data_date == upload_date)
+        .join(Item, Item.id == FactSnapshot.item_id)
+        .where(FactSnapshot.company == company)
+        .where(FactSnapshot.data_date == upload_date)
     )
     rows = session.execute(stmt).all()
     return {
-        (row.warehouse, row.sku, row.manufacturer): {
-            "id": row.id,
+        (row.warehouse, row.canonical_sku, row.manufacturer_norm): {
+            "item_id": row.item_id,
             "price": row.price,
         }
         for row in rows
@@ -546,21 +599,18 @@ def _load_existing_delta_map(
 ) -> dict[tuple[str, str, str | None], dict[str, object]]:
     stmt = (
         select(
-            DailyDelta.id,
-            DailyDelta.warehouse,
-            DailyDelta.sku,
-            DailyDelta.manufacturer,
-            DailyDelta.price,
+            FactDeltaChange.item_id,
+            FactDeltaChange.warehouse,
+            Item.canonical_sku,
+            Item.manufacturer_norm,
         )
-        .where(DailyDelta.company == company)
-        .where(DailyDelta.data_date == upload_date)
+        .join(Item, Item.id == FactDeltaChange.item_id)
+        .where(FactDeltaChange.company == company)
+        .where(FactDeltaChange.data_date == upload_date)
     )
     rows = session.execute(stmt).all()
     return {
-        (row.warehouse, row.sku, row.manufacturer): {
-            "id": row.id,
-            "price": row.price,
-        }
+        (row.warehouse, row.canonical_sku, row.manufacturer_norm): {"item_id": row.item_id}
         for row in rows
     }
 
@@ -586,6 +636,7 @@ def ingest_excel(
     file_hash = hashlib.sha256(file_bytes).hexdigest()
     ingest_run_id: int | None = None
     ingest_run_payload: dict[str, object] | None = None
+    started_at = datetime.utcnow()
     try:
         logger.info("Starting ingest for %s", upload_date)
         df = pd.read_excel(
@@ -612,6 +663,10 @@ def ingest_excel(
             .str.upper()
             .str.replace(r"\s+", " ", regex=True)
         )
+        if "manufacturer" in df.columns:
+            df["manufacturer"] = df["manufacturer"].map(_normalize_item_value)
+        if "mfg_sku" in df.columns:
+            df["mfg_sku"] = df["mfg_sku"].map(_normalize_item_value)
         empty_sku = df["sku"].eq("")
         if empty_sku.any():
             dropped = int(empty_sku.sum())
@@ -628,9 +683,9 @@ def ingest_excel(
         warehouses = aggregated["warehouse"].dropna().unique().tolist()
 
         existing_snapshot_date = session.scalar(
-            select(DailySnapshot.id)
-            .where(DailySnapshot.company == company)
-            .where(DailySnapshot.data_date == upload_date)
+            select(FactSnapshot.item_id)
+            .where(FactSnapshot.company == company)
+            .where(FactSnapshot.data_date == upload_date)
         )
         if existing_snapshot_date and mode != "replace":
             raise IngestConflict(
@@ -654,9 +709,9 @@ def ingest_excel(
                 aggregated = aggregated.drop(columns=["price_existing"])
 
         prev_date = session.scalar(
-            select(func.max(DailySnapshot.data_date))
-            .where(DailySnapshot.company == company)
-            .where(DailySnapshot.data_date < upload_date)
+            select(func.max(FactSnapshot.data_date))
+            .where(FactSnapshot.company == company)
+            .where(FactSnapshot.data_date < upload_date)
         )
         if prev_date is None:
             merged = aggregated.copy()
@@ -774,49 +829,90 @@ def ingest_excel(
             )
 
         merged_records = merged.rename(columns={"nomenclature": "name"})
-        snapshot_columns = ["warehouse", "sku"]
-        for optional_column in ("mfg_sku", "brand"):
-            if optional_column in merged_records.columns:
-                snapshot_columns.append(optional_column)
-        snapshot_columns += [
-            "manufacturer",
-            "name",
-            "group_name",
-            "project_label",
-            "stock_qty",
-            "price",
-        ]
-        snapshot_records = merged_records[snapshot_columns].to_dict("records")
-        snapshot_update_columns = [
-            column
-            for column in snapshot_columns
-            if column not in {"warehouse", "sku"}
-        ]
-        for record in snapshot_records:
-            record["data_date"] = upload_date
-            record["company"] = company
-
-        delta_columns = [
-            "warehouse",
+        item_columns = [
             "sku",
             "manufacturer",
             "name",
             "group_name",
             "project_label",
-            "stock_qty",
-            "sold_qty",
-            "replenished_qty",
-            "price",
         ]
-        delta_records = merged_records[delta_columns].to_dict("records")
-        delta_update_columns = [
-            column
-            for column in delta_columns
-            if column not in {"warehouse", "sku"}
-        ]
-        for record in delta_records:
-            record["data_date"] = upload_date
+        if "brand" in merged_records.columns:
+            item_columns.append("brand")
+        if "mfg_sku" in merged_records.columns:
+            item_columns.append("mfg_sku")
+        item_records = (
+            merged_records[item_columns]
+            .drop_duplicates(subset=["sku"])
+            .to_dict("records")
+        )
+        for record in item_records:
             record["company"] = company
+            record["canonical_sku"] = record.pop("sku")
+            record["sku_norm"] = _normalize_item_value(record["canonical_sku"])
+            record["mfg_sku_norm"] = _normalize_item_value(record.pop("mfg_sku", None))
+            record["manufacturer_norm"] = _normalize_item_value(
+                record.pop("manufacturer", None)
+            )
+            record["name"] = record.get("name")
+            record["brand"] = record.get("brand")
+            record["group_name"] = record.get("group_name")
+            record["project_label"] = record.get("project_label")
+
+        item_skus = [record["canonical_sku"] for record in item_records]
+        if dry_run:
+            item_map = {sku: idx for idx, sku in enumerate(item_skus, start=1)}
+        else:
+            _upsert_items(session, item_records)
+            item_map = _load_item_map(session, company, item_skus)
+
+        snapshot_existing_map = None
+        if mode == "merge":
+            snapshot_existing_map = _load_existing_snapshot_map(
+                session, company, upload_date
+            )
+
+        snapshot_records = []
+        for record in merged_records[
+            ["warehouse", "sku", "manufacturer", "stock_qty", "price"]
+        ].to_dict("records"):
+            item_id = item_map.get(record["sku"])
+            if item_id is None:
+                continue
+            if snapshot_existing_map:
+                key = (record["warehouse"], record["sku"], record["manufacturer"])
+                existing_row = snapshot_existing_map.get(key)
+                if existing_row and existing_row["price"] is not None:
+                    record["price"] = existing_row["price"]
+            snapshot_records.append(
+                {
+                    "data_date": upload_date,
+                    "company": company,
+                    "warehouse": record["warehouse"],
+                    "item_id": item_id,
+                    "stock_qty": record["stock_qty"],
+                    "price": record.get("price"),
+                }
+            )
+        snapshot_update_columns = ["stock_qty", "price"]
+
+        delta_records = []
+        for record in merged_records[
+            ["warehouse", "sku", "sold_qty", "replenished_qty"]
+        ].to_dict("records"):
+            item_id = item_map.get(record["sku"])
+            if item_id is None:
+                continue
+            delta_records.append(
+                {
+                    "data_date": upload_date,
+                    "company": company,
+                    "warehouse": record["warehouse"],
+                    "item_id": item_id,
+                    "sold_qty": record["sold_qty"],
+                    "replenished_qty": record["replenished_qty"],
+                }
+            )
+        delta_update_columns = ["sold_qty", "replenished_qty"]
         rows_delta = 0 if prev_date is None else len(delta_records)
 
         if not dry_run:
@@ -834,16 +930,6 @@ def ingest_excel(
             if existing_hash:
                 raise IngestConflict("Этот файл уже был загружен ранее.")
 
-            snapshot_existing_map = None
-            delta_existing_map = None
-            if mode == "merge":
-                snapshot_existing_map = _load_existing_snapshot_map(
-                    session, company, upload_date
-                )
-                delta_existing_map = _load_existing_delta_map(
-                    session, company, upload_date
-                )
-
             with session.begin_nested():
                 # Use SAVEPOINT to stay compatible with SQLAlchemy 2.0 nested transactions.
                 ingest_run = IngestRun(
@@ -856,89 +942,91 @@ def ingest_excel(
 
                 if mode == "replace":
                     session.execute(
-                        delete(DailySnapshot)
-                        .where(DailySnapshot.company == company)
-                        .where(DailySnapshot.data_date == upload_date)
+                        delete(FactSnapshot)
+                        .where(FactSnapshot.company == company)
+                        .where(FactSnapshot.data_date == upload_date)
                     )
                     session.execute(
-                        delete(DailyDelta)
-                        .where(DailyDelta.company == company)
-                        .where(DailyDelta.data_date == upload_date)
+                        delete(FactDeltaChange)
+                        .where(FactDeltaChange.company == company)
+                        .where(FactDeltaChange.data_date == upload_date)
                     )
                     _upsert_batches(
                         session,
-                        DailySnapshot,
+                        FactSnapshot,
                         snapshot_records,
                         snapshot_update_columns,
+                        ["company", "data_date", "warehouse", "item_id"],
                     )
                     _upsert_batches(
                         session,
-                        DailyDelta,
+                        FactDeltaChange,
                         delta_records,
                         delta_update_columns,
+                        ["company", "data_date", "warehouse", "item_id"],
                     )
                 elif mode == "merge":
-                    for record in delta_records:
-                        key = (record["warehouse"], record["sku"], record["manufacturer"])
-                        existing_row = delta_existing_map.get(key)
-                        if existing_row and existing_row["price"] is not None:
-                            record["price"] = existing_row["price"]
-                    for record in snapshot_records:
-                        key = (record["warehouse"], record["sku"], record["manufacturer"])
-                        existing_row = snapshot_existing_map.get(key)
-                        if existing_row and existing_row["price"] is not None:
-                            record["price"] = existing_row["price"]
                     _upsert_batches(
                         session,
-                        DailySnapshot,
+                        FactSnapshot,
                         snapshot_records,
                         snapshot_update_columns,
+                        ["company", "data_date", "warehouse", "item_id"],
                     )
                     _upsert_batches(
                         session,
-                        DailyDelta,
+                        FactDeltaChange,
                         delta_records,
                         delta_update_columns,
+                        ["company", "data_date", "warehouse", "item_id"],
                     )
                 else:
                     if warehouses:
                         session.execute(
-                            delete(DailySnapshot)
-                            .where(DailySnapshot.company == company)
-                            .where(DailySnapshot.data_date == upload_date)
-                            .where(DailySnapshot.warehouse.in_(warehouses))
+                            delete(FactSnapshot)
+                            .where(FactSnapshot.company == company)
+                            .where(FactSnapshot.data_date == upload_date)
+                            .where(FactSnapshot.warehouse.in_(warehouses))
                         )
                         session.execute(
-                            delete(DailyDelta)
-                            .where(DailyDelta.company == company)
-                            .where(DailyDelta.data_date == upload_date)
-                            .where(DailyDelta.warehouse.in_(warehouses))
+                            delete(FactDeltaChange)
+                            .where(FactDeltaChange.company == company)
+                            .where(FactDeltaChange.data_date == upload_date)
+                            .where(FactDeltaChange.warehouse.in_(warehouses))
                         )
                     _upsert_batches(
                         session,
-                        DailySnapshot,
+                        FactSnapshot,
                         snapshot_records,
                         snapshot_update_columns,
+                        ["company", "data_date", "warehouse", "item_id"],
                     )
                     _upsert_batches(
                         session,
-                        DailyDelta,
+                        FactDeltaChange,
                         delta_records,
                         delta_update_columns,
+                        ["company", "data_date", "warehouse", "item_id"],
                     )
                 ingest_run.status = "ok"
+                ingest_run.rows_read = int(validation_report.get("rows_read", 0))
+                ingest_run.rows_long = len(snapshot_records)
+                ingest_run.rows_snapshot = len(snapshot_records)
+                ingest_run.rows_changes = rows_delta
+                duration = datetime.utcnow() - started_at
+                ingest_run.duration_ms = int(duration.total_seconds() * 1000)
 
             snapshot_count = session.scalar(
                 select(func.count())
-                .select_from(DailySnapshot)
-                .where(DailySnapshot.company == company)
-                .where(DailySnapshot.data_date == upload_date)
+                .select_from(FactSnapshot)
+                .where(FactSnapshot.company == company)
+                .where(FactSnapshot.data_date == upload_date)
             )
             delta_count = session.scalar(
                 select(func.count())
-                .select_from(DailyDelta)
-                .where(DailyDelta.company == company)
-                .where(DailyDelta.data_date == upload_date)
+                .select_from(FactDeltaChange)
+                .where(FactDeltaChange.company == company)
+                .where(FactDeltaChange.data_date == upload_date)
             )
             if ingest_run_id is not None:
                 ingest_run_count_query = (
@@ -960,13 +1048,13 @@ def ingest_excel(
             ingest_run_count = int(ingest_run_count or 0)
 
             logger.info(
-                "Persisted daily_snapshot rows: %s for %s/%s",
+                "Persisted fact_snapshot rows: %s for %s/%s",
                 snapshot_count,
                 company,
                 upload_date,
             )
             logger.info(
-                "Persisted daily_delta rows: %s for %s/%s",
+                "Persisted fact_delta_changes rows: %s for %s/%s",
                 delta_count,
                 company,
                 upload_date,
@@ -1022,5 +1110,14 @@ def ingest_excel(
                     error_message = error_message[:4000] + "…(truncated)"
                 existing_run.error_message = error_message
                 existing_run.status = "failed"
+                if "validation_report" in locals():
+                    existing_run.rows_read = int(validation_report.get("rows_read", 0))
+                if "snapshot_records" in locals():
+                    existing_run.rows_long = len(snapshot_records)
+                    existing_run.rows_snapshot = len(snapshot_records)
+                if "rows_delta" in locals():
+                    existing_run.rows_changes = rows_delta
+                duration = datetime.utcnow() - started_at
+                existing_run.duration_ms = int(duration.total_seconds() * 1000)
             session.commit()
         raise

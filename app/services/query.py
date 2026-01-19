@@ -5,7 +5,7 @@ from cachetools import TTLCache
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import DailyDelta, DailySnapshot
+from app.models import FactDeltaChange, FactSnapshot, Item
 
 SERIES_CACHE = TTLCache(maxsize=256, ttl=300)
 SUGGESTION_CACHE = TTLCache(maxsize=512, ttl=300)
@@ -40,36 +40,75 @@ def get_series(
     if cache_key in SERIES_CACHE:
         return SERIES_CACHE[cache_key]
 
-    stmt = (
+    delta_stmt = (
         select(
-            DailyDelta.data_date,
-            func.sum(DailyDelta.sold_qty).label("sold_qty"),
-            func.sum(DailyDelta.replenished_qty).label("replenished_qty"),
-            func.avg(DailyDelta.price).label("price"),
-            func.sum(DailyDelta.stock_qty).label("stock_qty"),
+            FactDeltaChange.data_date,
+            func.sum(FactDeltaChange.sold_qty).label("sold_qty"),
+            func.sum(FactDeltaChange.replenished_qty).label("replenished_qty"),
         )
-        .where(DailyDelta.data_date >= date_from)
-        .where(DailyDelta.data_date <= date_to)
-        .group_by(DailyDelta.data_date)
-        .order_by(DailyDelta.data_date)
+        .join(Item, Item.id == FactDeltaChange.item_id)
+        .where(FactDeltaChange.data_date >= date_from)
+        .where(FactDeltaChange.data_date <= date_to)
+        .group_by(FactDeltaChange.data_date)
+        .order_by(FactDeltaChange.data_date)
+    )
+    snapshot_stmt = (
+        select(
+            FactSnapshot.data_date,
+            func.avg(FactSnapshot.price).label("price"),
+            func.sum(FactSnapshot.stock_qty).label("stock_qty"),
+        )
+        .join(Item, Item.id == FactSnapshot.item_id)
+        .where(FactSnapshot.data_date >= date_from)
+        .where(FactSnapshot.data_date <= date_to)
+        .group_by(FactSnapshot.data_date)
+        .order_by(FactSnapshot.data_date)
     )
     if sku:
-        stmt = stmt.where(DailyDelta.sku == sku)
+        delta_stmt = delta_stmt.where(Item.canonical_sku == sku)
+        snapshot_stmt = snapshot_stmt.where(Item.canonical_sku == sku)
     if warehouses:
-        stmt = stmt.where(DailyDelta.warehouse.in_(warehouses))
+        delta_stmt = delta_stmt.where(FactDeltaChange.warehouse.in_(warehouses))
+        snapshot_stmt = snapshot_stmt.where(FactSnapshot.warehouse.in_(warehouses))
     if manufacturer:
-        stmt = stmt.where(DailyDelta.manufacturer == manufacturer)
+        delta_stmt = delta_stmt.where(Item.manufacturer_norm == manufacturer)
+        snapshot_stmt = snapshot_stmt.where(Item.manufacturer_norm == manufacturer)
     if project_label:
-        stmt = stmt.where(DailyDelta.project_label == project_label)
+        delta_stmt = delta_stmt.where(Item.project_label == project_label)
+        snapshot_stmt = snapshot_stmt.where(Item.project_label == project_label)
     if company:
-        stmt = stmt.where(DailyDelta.company == company)
+        delta_stmt = delta_stmt.where(FactDeltaChange.company == company)
+        snapshot_stmt = snapshot_stmt.where(FactSnapshot.company == company)
+        delta_stmt = delta_stmt.where(Item.company == company)
+        snapshot_stmt = snapshot_stmt.where(Item.company == company)
 
-    rows = session.execute(stmt).all()
-    dates = [row.data_date.isoformat() for row in rows]
-    sold = [float(row.sold_qty or 0) for row in rows]
-    replenished = [float(row.replenished_qty or 0) for row in rows]
-    prices = [float(row.price or 0) for row in rows]
-    stock_qty = [float(row.stock_qty or 0) for row in rows]
+    delta_rows = session.execute(delta_stmt).all()
+    snapshot_rows = session.execute(snapshot_stmt).all()
+    delta_map = {
+        row.data_date: {
+            "sold_qty": row.sold_qty,
+            "replenished_qty": row.replenished_qty,
+        }
+        for row in delta_rows
+    }
+    snapshot_map = {
+        row.data_date: {"price": row.price, "stock_qty": row.stock_qty}
+        for row in snapshot_rows
+    }
+    dates_sorted = sorted(set(delta_map) | set(snapshot_map))
+    dates = [day.isoformat() for day in dates_sorted]
+    sold = [float(delta_map.get(day, {}).get("sold_qty") or 0) for day in dates_sorted]
+    replenished = [
+        float(delta_map.get(day, {}).get("replenished_qty") or 0)
+        for day in dates_sorted
+    ]
+    prices = [
+        float(snapshot_map.get(day, {}).get("price") or 0) for day in dates_sorted
+    ]
+    stock_qty = [
+        float(snapshot_map.get(day, {}).get("stock_qty") or 0)
+        for day in dates_sorted
+    ]
 
     sold_total = sum(sold)
     replenished_total = sum(replenished)
@@ -106,10 +145,10 @@ def get_suggestions(
         return SUGGESTION_CACHE[cache_key]
 
     allowed_fields = {
-        "sku": DailyDelta.sku,
-        "warehouse": DailyDelta.warehouse,
-        "manufacturer": DailyDelta.manufacturer,
-        "name": DailyDelta.name,
+        "sku": Item.canonical_sku,
+        "warehouse": FactDeltaChange.warehouse,
+        "manufacturer": Item.manufacturer_norm,
+        "name": Item.name,
     }
     if field not in allowed_fields:
         return []
@@ -123,8 +162,12 @@ def get_suggestions(
         .order_by(column)
         .limit(limit)
     )
-    if company:
-        stmt = stmt.where(DailyDelta.company == company)
+    if field == "warehouse":
+        if company:
+            stmt = stmt.where(FactDeltaChange.company == company)
+    else:
+        if company:
+            stmt = stmt.where(Item.company == company)
     rows = session.execute(stmt).scalars().all()
     if field in cacheable_fields:
         SUGGESTION_CACHE[cache_key] = rows
@@ -144,47 +187,86 @@ def get_top_sales(
     date_to: date | None = None,
 ) -> list[dict[str, Any]]:
     group_by_columns = [
-        DailyDelta.sku,
-        DailyDelta.name,
-        DailyDelta.manufacturer,
-        DailyDelta.brand,
+        Item.canonical_sku,
+        Item.name,
+        Item.manufacturer_norm,
+        Item.brand,
     ]
     if group_by_warehouse:
-        warehouse_column = DailyDelta.warehouse
-        group_by_columns.append(DailyDelta.warehouse)
+        warehouse_column = FactDeltaChange.warehouse
+        group_by_columns.append(FactDeltaChange.warehouse)
     else:
-        warehouse_column = func.min(DailyDelta.warehouse)
+        warehouse_column = func.min(FactDeltaChange.warehouse)
+
+    snapshot_group_columns = [FactSnapshot.item_id]
+    snapshot_select_columns = [
+        FactSnapshot.item_id.label("item_id"),
+        func.max(FactSnapshot.price).label("last_price"),
+    ]
+    if group_by_warehouse:
+        snapshot_group_columns.append(FactSnapshot.warehouse)
+        snapshot_select_columns.append(FactSnapshot.warehouse.label("warehouse"))
+    snapshot_stmt = select(*snapshot_select_columns).join(
+        Item, Item.id == FactSnapshot.item_id
+    )
+
+    if company:
+        snapshot_stmt = snapshot_stmt.where(FactSnapshot.company == company).where(
+            Item.company == company
+        )
+    if warehouses:
+        snapshot_stmt = snapshot_stmt.where(FactSnapshot.warehouse.in_(warehouses))
+    if sku:
+        snapshot_stmt = snapshot_stmt.where(Item.canonical_sku == sku)
+    if name:
+        snapshot_stmt = snapshot_stmt.where(Item.name.ilike(f"%{name}%"))
+    if project_label:
+        snapshot_stmt = snapshot_stmt.where(Item.project_label == project_label)
+    if date_from:
+        snapshot_stmt = snapshot_stmt.where(FactSnapshot.data_date >= date_from)
+    if date_to:
+        snapshot_stmt = snapshot_stmt.where(FactSnapshot.data_date <= date_to)
+
+    snapshot_subq = snapshot_stmt.group_by(*snapshot_group_columns).subquery()
+
+    join_condition = FactDeltaChange.item_id == snapshot_subq.c.item_id
+    if group_by_warehouse:
+        join_condition = join_condition & (
+            FactDeltaChange.warehouse == snapshot_subq.c.warehouse
+        )
 
     stmt = (
         select(
-            DailyDelta.sku,
-            DailyDelta.name,
-            DailyDelta.manufacturer,
-            DailyDelta.brand,
+            Item.canonical_sku.label("sku"),
+            Item.name,
+            Item.manufacturer_norm.label("manufacturer"),
+            Item.brand,
             warehouse_column.label("warehouse"),
-            func.sum(DailyDelta.sold_qty).label("sold"),
-            func.sum(DailyDelta.replenished_qty).label("repl"),
-            func.max(DailyDelta.price).label("last_price"),
+            func.sum(FactDeltaChange.sold_qty).label("sold"),
+            func.sum(FactDeltaChange.replenished_qty).label("repl"),
+            func.max(snapshot_subq.c.last_price).label("last_price"),
         )
+        .join(Item, Item.id == FactDeltaChange.item_id)
+        .outerjoin(snapshot_subq, join_condition)
         .group_by(*group_by_columns)
-        .order_by(func.sum(DailyDelta.sold_qty).desc())
+        .order_by(func.sum(FactDeltaChange.sold_qty).desc())
         .limit(limit)
     )
 
     if company:
-        stmt = stmt.where(DailyDelta.company == company)
+        stmt = stmt.where(FactDeltaChange.company == company).where(Item.company == company)
     if warehouses:
-        stmt = stmt.where(DailyDelta.warehouse.in_(warehouses))
+        stmt = stmt.where(FactDeltaChange.warehouse.in_(warehouses))
     if sku:
-        stmt = stmt.where(DailyDelta.sku == sku)
+        stmt = stmt.where(Item.canonical_sku == sku)
     if name:
-        stmt = stmt.where(DailyDelta.name.ilike(f"%{name}%"))
+        stmt = stmt.where(Item.name.ilike(f"%{name}%"))
     if project_label:
-        stmt = stmt.where(DailyDelta.project_label == project_label)
+        stmt = stmt.where(Item.project_label == project_label)
     if date_from:
-        stmt = stmt.where(DailyDelta.data_date >= date_from)
+        stmt = stmt.where(FactDeltaChange.data_date >= date_from)
     if date_to:
-        stmt = stmt.where(DailyDelta.data_date <= date_to)
+        stmt = stmt.where(FactDeltaChange.data_date <= date_to)
 
     rows = session.execute(stmt).mappings().all()
     return [dict(row) for row in rows]
@@ -197,10 +279,10 @@ def get_ingest_state(
     limit = max(limit, 1)
     snapshot_dates = (
         session.execute(
-            select(DailySnapshot.data_date)
-            .where(DailySnapshot.company == normalized_company)
+            select(FactSnapshot.data_date)
+            .where(FactSnapshot.company == normalized_company)
             .distinct()
-            .order_by(DailySnapshot.data_date.desc())
+            .order_by(FactSnapshot.data_date.desc())
             .limit(limit)
         )
         .scalars()
@@ -211,23 +293,23 @@ def get_ingest_state(
         snapshot_counts = dict(
             session.execute(
                 select(
-                    DailySnapshot.data_date,
+                    FactSnapshot.data_date,
                     func.count().label("snapshot_rows"),
                 )
-                .where(DailySnapshot.company == normalized_company)
-                .where(DailySnapshot.data_date.in_(snapshot_dates))
-                .group_by(DailySnapshot.data_date)
+                .where(FactSnapshot.company == normalized_company)
+                .where(FactSnapshot.data_date.in_(snapshot_dates))
+                .group_by(FactSnapshot.data_date)
             ).all()
         )
         delta_counts = dict(
             session.execute(
                 select(
-                    DailyDelta.data_date,
+                    FactDeltaChange.data_date,
                     func.count().label("delta_rows"),
                 )
-                .where(DailyDelta.company == normalized_company)
-                .where(DailyDelta.data_date.in_(snapshot_dates))
-                .group_by(DailyDelta.data_date)
+                .where(FactDeltaChange.company == normalized_company)
+                .where(FactDeltaChange.data_date.in_(snapshot_dates))
+                .group_by(FactDeltaChange.data_date)
             ).all()
         )
     else:
@@ -235,8 +317,8 @@ def get_ingest_state(
         delta_counts = {}
 
     max_date = session.scalar(
-        select(func.max(DailySnapshot.data_date)).where(
-            DailySnapshot.company == normalized_company
+        select(func.max(FactSnapshot.data_date)).where(
+            FactSnapshot.company == normalized_company
         )
     )
     today = date.today()
@@ -248,9 +330,9 @@ def get_ingest_state(
         next_upload_date = today
 
     prev_date = session.scalar(
-        select(func.max(DailySnapshot.data_date))
-        .where(DailySnapshot.company == normalized_company)
-        .where(DailySnapshot.data_date < next_upload_date)
+        select(func.max(FactSnapshot.data_date))
+        .where(FactSnapshot.company == normalized_company)
+        .where(FactSnapshot.data_date < next_upload_date)
     )
 
     items = []

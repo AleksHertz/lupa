@@ -129,10 +129,18 @@ def upload_file(
     current_db = session.execute(text("select current_database()")).scalar()
     logger.debug("Current database: %s", current_db)
     try:
+        file_bytes = file.file.read()
+    except (ClientDisconnect, anyio.EndOfStream):
+        return JSONResponse(
+            status_code=499,
+            content={"detail": "Client disconnected"},
+        )
+    logger.info("Uploaded file size: %s bytes", len(file_bytes))
+    try:
         payload = ingest_excel(
             session=session,
             upload_date=upload_date,
-            file_bytes=file.file.read(),
+            file_bytes=file_bytes,
             company=company,
             file_name=file.filename,
             mode=mode,

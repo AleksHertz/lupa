@@ -3,7 +3,7 @@ import io
 import logging
 import re
 from datetime import date, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 
 import pandas as pd
 from sqlalchemy import delete, func, select
@@ -13,7 +13,9 @@ from sqlalchemy.orm import Session
 from app.models import FactDeltaChange, FactSnapshot, IngestRun, Item
 
 logger = logging.getLogger(__name__)
-_BULK_BATCH_SIZE = 10000
+_BULK_BATCH_SIZE = 20000
+_MIN_BULK_BATCH_SIZE = 10000
+_MAX_BULK_BATCH_SIZE = 50000
 
 
 def _normalize_header(value: str) -> str:
@@ -384,10 +386,17 @@ def _project_label_for_group(group_name: str | None) -> str | None:
     return None
 
 
-def _chunk_records(records: list[dict[str, Any]], batch_size: int) -> list[list[dict[str, Any]]]:
-    if batch_size <= 0:
-        raise ValueError("batch_size must be positive")
-    return [records[idx : idx + batch_size] for idx in range(0, len(records), batch_size)]
+def _iter_batches(
+    records: list[dict[str, Any]], batch_size: int
+) -> Iterable[list[dict[str, Any]]]:
+    if not (_MIN_BULK_BATCH_SIZE <= batch_size <= _MAX_BULK_BATCH_SIZE):
+        raise ValueError(
+            "batch_size must be between "
+            f"{_MIN_BULK_BATCH_SIZE} and {_MAX_BULK_BATCH_SIZE}"
+        )
+    if not records:
+        return iter(())
+    return (records[idx : idx + batch_size] for idx in range(0, len(records), batch_size))
 
 
 def _insert_batches(
@@ -399,7 +408,7 @@ def _insert_batches(
         return
     table = model.__table__
     insert_stmt = table.insert()
-    for batch in _chunk_records(records, _BULK_BATCH_SIZE):
+    for batch in _iter_batches(records, _BULK_BATCH_SIZE):
         session.execute(insert_stmt, batch)
 
 
@@ -425,7 +434,7 @@ def _upsert_items(session: Session, records: list[dict[str, Any]]) -> None:
             for column in update_columns
         },
     )
-    for batch in _chunk_records(records, _BULK_BATCH_SIZE):
+    for batch in _iter_batches(records, _BULK_BATCH_SIZE):
         session.execute(stmt, batch)
 
 

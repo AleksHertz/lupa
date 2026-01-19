@@ -702,7 +702,7 @@ def ingest_excel(
             .where(FactSnapshot.company == company)
             .where(FactSnapshot.data_date < upload_date)
         )
-        delta_records = []
+        delta_records: list[dict[str, object]] = []
         rows_changes = 0
         if prev_date is not None:
             prev_rows = session.execute(
@@ -755,12 +755,15 @@ def ingest_excel(
                 for record in changes.to_dict("records")
             ]
             rows_changes = len(delta_records)
+        else:
+            delta_records = []
+            rows_changes = 0
 
         if not dry_run:
             with session.begin_nested():
                 # Use SAVEPOINT to stay compatible with SQLAlchemy 2.0 nested transactions.
                 _insert_batches(session, FactSnapshot, snapshot_records)
-                if prev_date is not None:
+                if prev_date is not None and delta_records:
                     _insert_batches(session, FactDeltaChange, delta_records)
 
             snapshot_count = session.scalar(

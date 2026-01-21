@@ -200,18 +200,17 @@ def series(
     sku = _normalize_blank(sku)
     manufacturer = _normalize_blank(manufacturer)
     project_label = _normalize_blank(project_label)
-    company_norm = _normalize_blank(company)
-    if company_norm is not None:
-        company_norm = company_norm.lower()
-        company_alias = unicodedata.normalize("NFKC", company_norm).casefold()
-        if company_alias in {"alliance", "альянс"}:
-            company_norm = "alliance"
-        allowed_companies = {"alliance", "vostok"}
-        if company_norm not in allowed_companies:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown company: {company}",
-            )
+    company_norm = _normalize_blank(company) or "alliance"
+    company_norm = company_norm.lower()
+    company_alias = unicodedata.normalize("NFKC", company_norm).casefold()
+    if company_alias in {"alliance", "альянс"}:
+        company_norm = "alliance"
+    allowed_companies = {"alliance", "vostok"}
+    if company_norm not in allowed_companies:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown company: {company}",
+        )
     if item_id is None and sku:
         item_id = resolve_item_id(session=session, sku=sku, company=company_norm)
         if item_id is None:
@@ -219,7 +218,7 @@ def series(
                 status_code=400,
                 detail=f"No item found for sku or name: {sku}",
             )
-    warehouse = warehouses[0] if warehouses else None
+    warehouse = _normalize_blank(warehouses[0]) if warehouses else None
     return get_series_v2(
         session=session,
         item_id=item_id,

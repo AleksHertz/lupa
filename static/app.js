@@ -17,6 +17,8 @@ const kpiReplenished = document.getElementById("kpi-replenished");
 const kpiMaxSold = document.getElementById("kpi-max-sold");
 const kpiMaxRepl = document.getElementById("kpi-max-repl");
 
+let lastSeriesParams = null;
+
 function setStatus(message, isError = false) {
   uploadStatus.textContent = message;
   uploadStatus.style.color = isError ? "#b42318" : "#027a48";
@@ -162,6 +164,142 @@ function collectFilters() {
   };
 }
 
+function formatNumber(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "—";
+  }
+  if (typeof value === "number") {
+    return value.toLocaleString("ru-RU");
+  }
+  return `${value}`;
+}
+
+function setSeriesEmptyState(availableRange, onShowAvailable) {
+  const chartEl = document.getElementById("chart");
+  if (!chartEl) return;
+  Plotly.purge(chartEl);
+  chartEl.innerHTML = "";
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "empty-state";
+
+  const message = document.createElement("p");
+  message.textContent = "Нет данных…";
+  wrapper.append(message);
+
+  if (availableRange?.min && availableRange?.max) {
+    const range = document.createElement("p");
+    range.textContent = `Доступный период: ${availableRange.min} — ${availableRange.max}`;
+    wrapper.append(range);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Show available period";
+    button.addEventListener("click", () => {
+      onShowAvailable?.(availableRange.min, availableRange.max);
+    });
+    wrapper.append(button);
+  }
+
+  chartEl.append(wrapper);
+}
+
+function renderSeries(payload) {
+  const summary = payload?.summary || {};
+  const series = Array.isArray(payload?.series) ? payload.series : [];
+
+  kpiSold.textContent = formatNumber(summary.sold_total);
+  kpiReplenished.textContent = formatNumber(summary.replenished_total);
+  kpiMaxSold.textContent = formatNumber(summary.rank);
+  kpiMaxRepl.textContent = "—";
+
+  if (series.length === 0) {
+    setSeriesEmptyState(payload?.available_range, (minDate, maxDate) => {
+      const dateFromInput = document.getElementById("filter-date-from");
+      const dateToInput = document.getElementById("filter-date-to");
+      if (dateFromInput) dateFromInput.value = minDate;
+      if (dateToInput) dateToInput.value = maxDate;
+      if (lastSeriesParams) {
+        fetchSeriesWithParams({
+          ...lastSeriesParams,
+          dateFrom: minDate,
+          dateTo: maxDate,
+        });
+      }
+    });
+    return;
+  }
+
+  const dates = series.map((entry) => entry.date);
+  const soldValues = series.map((entry) => entry.sold ?? 0);
+  const replenishedValues = series.map((entry) => entry.replenished ?? 0);
+  const stockValues = series.map((entry) => entry.stock ?? null);
+  const priceValues = series.map((entry) => entry.price ?? null);
+
+  const soldTrace = {
+    x: dates,
+    y: soldValues,
+    name: "Продано",
+    type: "bar",
+    marker: { color: "#2563eb" },
+  };
+
+  const replTrace = {
+    x: dates,
+    y: replenishedValues,
+    name: "Пополнено",
+    type: "bar",
+    marker: { color: "#16a34a" },
+  };
+
+  const traces = [soldTrace, replTrace];
+
+  if (stockToggle?.checked && stockValues.some((value) => value !== null)) {
+    traces.push({
+      x: dates,
+      y: stockValues,
+      name: "Остаток",
+      yaxis: "y2",
+      type: "scatter",
+      mode: "lines",
+      line: { color: "#0ea5e9", width: 2 },
+    });
+  }
+
+  if (priceValues.some((value) => value !== null)) {
+    traces.push({
+      x: dates,
+      y: priceValues,
+      name: "Цена",
+      yaxis: "y3",
+      type: "scatter",
+      mode: "lines+markers",
+      line: { color: "#f97316" },
+    });
+  }
+
+  const layout = {
+    barmode: "group",
+    yaxis: { title: "Кол-во" },
+    yaxis2: {
+      title: "Остаток",
+      overlaying: "y",
+      side: "right",
+    },
+    yaxis3: {
+      title: "Цена",
+      overlaying: "y",
+      side: "right",
+      position: 1.08,
+    },
+    margin: { t: 30 },
+  };
+
+  Plotly.newPlot("chart", traces, layout, {
+    responsive: true,
+  });
+}
+
 function getUploadMode() {
   const mode = new URLSearchParams(window.location.search).get("mode");
   return mode === "bootstrap" ? "bootstrap" : "reject";
@@ -208,22 +346,21 @@ async function loadWarehouseOptions() {
   });
 }
 
-async function fetchSeries() {
-  const {
-    sku,
-    manufacturer,
-    company,
-    project,
-    warehouse,
-    dateFrom,
-    dateTo,
-  } = collectFilters();
-
+async function fetchSeriesWithParams({
+  itemId,
+  sku,
+  manufacturer,
+  company,
+  project,
+  warehouse,
+  dateFrom,
+  dateTo,
+}) {
   if (!dateFrom || !dateTo) {
     return;
   }
-
   const params = new URLSearchParams();
+  appendParam(params, "item_id", itemId);
   appendParam(params, "sku", sku);
   appendParam(params, "warehouse", warehouse);
   appendParam(params, "manufacturer", manufacturer);
@@ -235,73 +372,52 @@ async function fetchSeries() {
   if (!result.response?.ok) {
     return;
   }
-  const payload = result.payload;
-
-  const soldTrace = {
-    x: payload.dates,
-    y: payload.sold_qty,
-    name: "Продано",
-    type: "bar",
-    marker: { color: "#2563eb" },
+  lastSeriesParams = {
+    itemId,
+    sku,
+    manufacturer,
+    company,
+    project,
+    warehouse,
+    dateFrom,
+    dateTo,
   };
+  renderSeries(result.payload);
+}
 
-  const replTrace = {
-    x: payload.dates,
-    y: payload.replenished_qty,
-    name: "Пополнено",
-    type: "bar",
-    marker: { color: "#16a34a" },
-  };
-
-  const priceTrace = {
-    x: payload.dates,
-    y: payload.price,
-    name: "Цена",
-    yaxis: "y2",
-    type: "scatter",
-    mode: "lines+markers",
-    line: { color: "#f97316" },
-  };
-
-  const traces = [soldTrace, replTrace, priceTrace];
-
-  if (stockToggle?.checked && payload.stock_qty) {
-    traces.push({
-      x: payload.dates,
-      y: payload.stock_qty,
-      name: "Остаток",
-      yaxis: "y3",
-      type: "scatter",
-      mode: "lines",
-      line: { color: "#0ea5e9", width: 2 },
-    });
-  }
-
-  const layout = {
-    barmode: "group",
-    yaxis: { title: "Кол-во" },
-    yaxis2: {
-      title: "Цена",
-      overlaying: "y",
-      side: "right",
-    },
-    yaxis3: {
-      title: "Остаток",
-      overlaying: "y",
-      side: "right",
-      position: 1.05,
-    },
-    margin: { t: 30 },
-  };
-
-  Plotly.newPlot("chart", traces, layout, {
-    responsive: true,
+async function fetchSeries() {
+  const {
+    sku,
+    manufacturer,
+    company,
+    project,
+    warehouse,
+    dateFrom,
+    dateTo,
+  } = collectFilters();
+  await fetchSeriesWithParams({
+    sku,
+    manufacturer,
+    company,
+    project,
+    warehouse,
+    dateFrom,
+    dateTo,
   });
+}
 
-  kpiSold.textContent = payload.kpi.sold_total.toFixed(2);
-  kpiReplenished.textContent = payload.kpi.replenished_total.toFixed(2);
-  kpiMaxSold.textContent = payload.kpi.max_sold_date || "—";
-  kpiMaxRepl.textContent = payload.kpi.max_replenished_date || "—";
+async function fetchSeriesForItem(item) {
+  const { company, warehouse, dateFrom, dateTo } = collectFilters();
+  const selectedWarehouse = Array.isArray(warehouse) ? warehouse[0] : warehouse;
+  const rowWarehouse =
+    item?.warehouse && item.warehouse !== "ALL" ? item.warehouse : null;
+  await fetchSeriesWithParams({
+    itemId: item?.item_id,
+    company,
+    warehouse: rowWarehouse ?? selectedWarehouse,
+    dateFrom,
+    dateTo,
+  });
 }
 
 function renderTopTable(items) {
@@ -309,6 +425,9 @@ function renderTopTable(items) {
   topTableBody.innerHTML = "";
   items.forEach((item) => {
     const row = document.createElement("tr");
+    if (item.item_id) {
+      row.dataset.itemId = item.item_id;
+    }
     row.innerHTML = `
       <td>${item.rank ?? "—"}</td>
       <td>${item.sku ?? "—"}</td>
@@ -321,11 +440,7 @@ function renderTopTable(items) {
       <td>${item.last_price ?? "—"}</td>
     `;
     row.addEventListener("click", () => {
-      const skuInput = document.getElementById("filter-sku");
-      if (skuInput && item.sku) {
-        skuInput.value = item.sku;
-      }
-      fetchSeries();
+      fetchSeriesForItem(item);
     });
     topTableBody.append(row);
   });

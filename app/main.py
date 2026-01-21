@@ -23,7 +23,13 @@ from app.services.ingest import (
     IngestPersistenceError,
     ingest_excel,
 )
-from app.services.query import get_ingest_state, get_series, get_suggestions, get_top_sales
+from app.services.query import (
+    get_availability,
+    get_ingest_state,
+    get_series,
+    get_suggestions,
+    get_top_sales,
+)
 
 
 def _normalize_csv_list(values: list[str] | None) -> list[str] | None:
@@ -284,6 +290,15 @@ def top_sales(
             date_to=date_to,
         )
     }
+
+
+@app.get("/availability")
+def availability(
+    company: str | None = Query(default="alliance"),
+    session: Session = Depends(get_session),
+):
+    company_norm = company.strip().lower() if company else None
+    return get_availability(session=session, company=company_norm)
 
 
 @app.get("/health")

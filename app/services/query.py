@@ -201,7 +201,7 @@ def get_top_sales(
     sku: str | None = None,
     manufacturer: str | None = None,
     name: str | None = None,
-    project_label: str | None = None,
+    project: str | None = None,
     group_by_warehouse: bool = True,
     date_from: date | None = None,
     date_to: date | None = None,
@@ -237,13 +237,19 @@ def get_top_sales(
     if warehouses:
         snapshot_stmt = snapshot_stmt.where(FactSnapshot.warehouse.in_(warehouses))
     if sku:
-        snapshot_stmt = snapshot_stmt.where(Item.canonical_sku == sku)
+        sku_filter = or_(
+            Item.canonical_sku == sku,
+            Item.sku_norm.ilike(f"%{sku}%"),
+        )
+        snapshot_stmt = snapshot_stmt.where(sku_filter)
     if manufacturer:
-        snapshot_stmt = snapshot_stmt.where(Item.manufacturer_norm == manufacturer)
+        snapshot_stmt = snapshot_stmt.where(
+            Item.manufacturer_norm.ilike(f"%{manufacturer}%")
+        )
     if name:
         snapshot_stmt = snapshot_stmt.where(Item.name.ilike(f"%{name}%"))
-    if project_label:
-        snapshot_stmt = snapshot_stmt.where(Item.project_label == project_label)
+    if project:
+        snapshot_stmt = snapshot_stmt.where(Item.project_label == project)
     if date_from:
         snapshot_stmt = snapshot_stmt.where(FactSnapshot.data_date >= date_from)
     if date_to:
@@ -280,13 +286,17 @@ def get_top_sales(
     if warehouses:
         stmt = stmt.where(FactDeltaChange.warehouse.in_(warehouses))
     if sku:
-        stmt = stmt.where(Item.canonical_sku == sku)
+        sku_filter = or_(
+            Item.canonical_sku == sku,
+            Item.sku_norm.ilike(f"%{sku}%"),
+        )
+        stmt = stmt.where(sku_filter)
     if manufacturer:
-        stmt = stmt.where(Item.manufacturer_norm == manufacturer)
+        stmt = stmt.where(Item.manufacturer_norm.ilike(f"%{manufacturer}%"))
     if name:
         stmt = stmt.where(Item.name.ilike(f"%{name}%"))
-    if project_label:
-        stmt = stmt.where(Item.project_label == project_label)
+    if project:
+        stmt = stmt.where(Item.project_label == project)
     if date_from:
         stmt = stmt.where(FactDeltaChange.data_date >= date_from)
     if date_to:

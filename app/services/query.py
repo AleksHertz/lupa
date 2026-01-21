@@ -504,6 +504,7 @@ def get_top_sales(
     date_to: date | None = None,
 ) -> list[dict[str, Any]]:
     group_by_columns = [
+        Item.id,
         Item.canonical_sku,
         Item.name,
         Item.manufacturer_norm,
@@ -560,21 +561,27 @@ def get_top_sales(
             FactDeltaChange.warehouse == snapshot_subq.c.warehouse
         )
 
+    sold_total_expr = func.sum(FactDeltaChange.sold_qty)
+    replenished_total_expr = func.sum(FactDeltaChange.replenished_qty)
     stmt = (
         select(
-            Item.canonical_sku.label("sku"),
+            Item.id.label("item_id"),
+            Item.canonical_sku.label("canonical_sku"),
             Item.name,
             Item.manufacturer_norm.label("manufacturer"),
             Item.brand,
             warehouse_column.label("warehouse"),
-            func.sum(FactDeltaChange.sold_qty).label("sold"),
-            func.sum(FactDeltaChange.replenished_qty).label("repl"),
+            sold_total_expr.label("sold_total"),
+            replenished_total_expr.label("replenished_total"),
             func.max(snapshot_subq.c.last_price).label("last_price"),
+            func.row_number()
+            .over(order_by=sold_total_expr.desc())
+            .label("rank"),
         )
         .join(Item, Item.id == FactDeltaChange.item_id)
         .outerjoin(snapshot_subq, join_condition)
         .group_by(*group_by_columns)
-        .order_by(func.sum(FactDeltaChange.sold_qty).desc())
+        .order_by(sold_total_expr.desc())
         .limit(limit)
     )
 

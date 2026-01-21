@@ -26,7 +26,7 @@ from app.services.ingest import (
 from app.services.query import (
     get_availability,
     get_ingest_state,
-    get_series,
+    get_series_v2,
     get_suggestions,
     get_top_sales,
     resolve_item_id,
@@ -219,14 +219,12 @@ def series(
                 status_code=400,
                 detail=f"No item found for sku or name: {sku}",
             )
-    return get_series(
+    warehouse = warehouses[0] if warehouses else None
+    return get_series_v2(
         session=session,
         item_id=item_id,
-        sku=sku,
-        warehouses=warehouses,
-        manufacturer=manufacturer,
-        project_label=project_label,
         company=company_norm,
+        warehouse=warehouse,
         date_from=date_from,
         date_to=date_to,
     )

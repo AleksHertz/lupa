@@ -278,7 +278,7 @@ def top_sales(
             sku=sku,
             manufacturer=manufacturer,
             name=name,
-            project_label=project_label,
+            project=project_label,
             group_by_warehouse=group_by_warehouse,
             date_from=date_from,
             date_to=date_to,

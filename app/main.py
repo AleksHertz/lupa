@@ -1,5 +1,5 @@
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode
 
@@ -206,18 +206,58 @@ def filter_suggestions(
 
 @app.get("/top")
 def top_sales(
-    limit: Literal[100, 500, 2000] = Query(100),
+    limit: int = Query(100, ge=1, le=2000),
     company: str | None = Query(default="alliance"),
     warehouses: list[str] | None = Query(default=None, alias="warehouse"),
     sku: str | None = Query(default=None),
+    manufacturer: str | None = Query(default=None),
     name: str | None = Query(default=None),
-    project_label: str | None = Query(default=None),
+    project_label: str | None = Query(default=None, alias="project"),
     group_by_warehouse: bool = Query(default=True),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     session: Session = Depends(get_session),
 ):
-    warehouses = _normalize_csv_list(warehouses)
+    def _normalize_blank(value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    def _normalize_warehouses(values: list[str] | None) -> list[str] | None:
+        if not values:
+            return None
+        normalized: list[str] = []
+        for value in values:
+            if value is None:
+                continue
+            parts = [part.strip() for part in value.split(",")]
+            normalized.extend(part for part in parts if part)
+        return normalized or None
+
+    def _parse_date(value: date | str | None, label: str) -> date | None:
+        if value is None:
+            return None
+        if isinstance(value, date):
+            return value
+        try:
+            return date.fromisoformat(value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{label} must be in YYYY-MM-DD format",
+            ) from exc
+
+    warehouses = _normalize_warehouses(warehouses)
+    sku = _normalize_blank(sku)
+    manufacturer = _normalize_blank(manufacturer)
+    project_label = _normalize_blank(project_label)
+    name = _normalize_blank(name)
+    date_from = _parse_date(date_from, "date_from")
+    date_to = _parse_date(date_to, "date_to")
+    if date_from is None and date_to is None:
+        date_to = date.today()
+        date_from = date_to - timedelta(days=30)
     return {
         "items": get_top_sales(
             session=session,
@@ -225,6 +265,7 @@ def top_sales(
             company=company,
             warehouses=warehouses,
             sku=sku,
+            manufacturer=manufacturer,
             name=name,
             project_label=project_label,
             group_by_warehouse=group_by_warehouse,

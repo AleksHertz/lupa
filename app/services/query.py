@@ -193,6 +193,19 @@ def get_suggestions(
     return rows
 
 
+def get_availability(session: Session, company: str | None) -> dict[str, str | None]:
+    stmt = select(
+        func.min(FactSnapshot.data_date).label("min_date"),
+        func.max(FactSnapshot.data_date).label("max_date"),
+    )
+    if company:
+        stmt = stmt.where(FactSnapshot.company == company)
+    row = session.execute(stmt).one()
+    min_date = row.min_date.isoformat() if row.min_date else None
+    max_date = row.max_date.isoformat() if row.max_date else None
+    return {"min": min_date, "max": max_date}
+
+
 def get_top_sales(
     session: Session,
     limit: int,

@@ -274,13 +274,20 @@ def get_series_v2(
             else None,
         }
 
-    if availability_range["min"] is None and availability_range["max"] is None:
-        return {
+    def _empty_series_response(message: str) -> dict[str, Any]:
+        payload = {
             "item": item_data,
             "summary": {"rank": None, "sold_total": 0, "replenished_total": 0},
             "series": [],
             "available_range": availability_range,
+            "message": message,
         }
+        if availability_range["min"] and availability_range["max"]:
+            payload["suggested_range"] = dict(availability_range)
+        return payload
+
+    if availability_range["min"] is None and availability_range["max"] is None:
+        return _empty_series_response("No data for selected period.")
 
     calendar = (
         select(
@@ -321,6 +328,43 @@ def get_series_v2(
     if warehouse:
         delta_stmt = delta_stmt.where(FactDeltaChange.warehouse == warehouse)
         snapshot_stmt = snapshot_stmt.where(FactSnapshot.warehouse == warehouse)
+
+    delta_exists_stmt = (
+        select(FactDeltaChange.data_date)
+        .where(FactDeltaChange.data_date >= date_from)
+        .where(FactDeltaChange.data_date <= date_to)
+        .where(FactDeltaChange.item_id == item_id)
+    )
+    snapshot_exists_stmt = (
+        select(FactSnapshot.data_date)
+        .where(FactSnapshot.data_date >= date_from)
+        .where(FactSnapshot.data_date <= date_to)
+        .where(FactSnapshot.item_id == item_id)
+    )
+    if company:
+        delta_exists_stmt = delta_exists_stmt.where(FactDeltaChange.company == company)
+        snapshot_exists_stmt = snapshot_exists_stmt.where(
+            FactSnapshot.company == company
+        )
+    if warehouse:
+        delta_exists_stmt = delta_exists_stmt.where(
+            FactDeltaChange.warehouse == warehouse
+        )
+        snapshot_exists_stmt = snapshot_exists_stmt.where(
+            FactSnapshot.warehouse == warehouse
+        )
+    has_delta = session.execute(delta_exists_stmt.limit(1)).first()
+    has_snapshot = session.execute(snapshot_exists_stmt.limit(1)).first()
+
+    if not has_delta and not has_snapshot:
+        message = "No data for selected period."
+        if availability_range["min"] and availability_range["max"]:
+            message = (
+                "No data for selected period. Available: "
+                f"{availability_range['min']}..{availability_range['max']}"
+            )
+        return _empty_series_response(message)
+
     delta_stmt = delta_stmt.group_by(FactDeltaChange.data_date).subquery()
     snapshot_stmt = snapshot_stmt.group_by(FactSnapshot.data_date).subquery()
 

@@ -29,6 +29,7 @@ from app.services.query import (
     get_series,
     get_suggestions,
     get_top_sales,
+    resolve_item_id,
 )
 
 
@@ -179,6 +180,7 @@ def upload_file(
 
 @app.get("/series")
 def series(
+    item_id: int | None = Query(default=None),
     sku: str | None = Query(default=None),
     warehouses: list[str] | None = Query(default=None, alias="warehouse"),
     manufacturer: str | None = Query(default=None),
@@ -188,14 +190,43 @@ def series(
     date_to: date = Query(...),
     session: Session = Depends(get_session),
 ):
+    def _normalize_blank(value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
     warehouses = _normalize_csv_list(warehouses)
+    sku = _normalize_blank(sku)
+    manufacturer = _normalize_blank(manufacturer)
+    project_label = _normalize_blank(project_label)
+    company_norm = _normalize_blank(company)
+    if company_norm is not None:
+        company_norm = company_norm.lower()
+        company_alias = unicodedata.normalize("NFKC", company_norm).casefold()
+        if company_alias in {"alliance", "альянс"}:
+            company_norm = "alliance"
+        allowed_companies = {"alliance", "vostok"}
+        if company_norm not in allowed_companies:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown company: {company}",
+            )
+    if item_id is None and sku:
+        item_id = resolve_item_id(session=session, sku=sku, company=company_norm)
+        if item_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No item found for sku or name: {sku}",
+            )
     return get_series(
         session=session,
+        item_id=item_id,
         sku=sku,
         warehouses=warehouses,
         manufacturer=manufacturer,
         project_label=project_label,
-        company=company,
+        company=company_norm,
         date_from=date_from,
         date_to=date_to,
     )

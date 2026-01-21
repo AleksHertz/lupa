@@ -199,6 +199,7 @@ def get_top_sales(
     company: str | None = None,
     warehouses: list[str] | None = None,
     sku: str | None = None,
+    manufacturer: str | None = None,
     name: str | None = None,
     project_label: str | None = None,
     group_by_warehouse: bool = True,
@@ -237,6 +238,8 @@ def get_top_sales(
         snapshot_stmt = snapshot_stmt.where(FactSnapshot.warehouse.in_(warehouses))
     if sku:
         snapshot_stmt = snapshot_stmt.where(Item.canonical_sku == sku)
+    if manufacturer:
+        snapshot_stmt = snapshot_stmt.where(Item.manufacturer_norm == manufacturer)
     if name:
         snapshot_stmt = snapshot_stmt.where(Item.name.ilike(f"%{name}%"))
     if project_label:
@@ -278,6 +281,8 @@ def get_top_sales(
         stmt = stmt.where(FactDeltaChange.warehouse.in_(warehouses))
     if sku:
         stmt = stmt.where(Item.canonical_sku == sku)
+    if manufacturer:
+        stmt = stmt.where(Item.manufacturer_norm == manufacturer)
     if name:
         stmt = stmt.where(Item.name.ilike(f"%{name}%"))
     if project_label:

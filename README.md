@@ -51,7 +51,13 @@ Railway Pre-deploy Command = python -m alembic upgrade head
   - `upload_date` (YYYY-MM-DD)
   - `mode`: `reject` (по умолчанию), `merge` или `replace`
 - `GET /series?sku=&warehouse=&manufacturer=&date_from=&date_to=` — временной ряд (поле `price` вместо `price_start_day`)
+  - эндпоинт предпочитает `item_id`; если он не передан, выполняется поиск по `sku`/`name`
+  - примеры:
+    - `curl ".../series?item_id=123&company=alliance&date_from=2025-09-01&date_to=2025-09-30"`
 - `GET /filters/suggestions?field=sku&q=` — подсказки для фильтров
+- `GET /availability?company=` — доступность по компании
+  - примеры:
+    - `curl ".../availability?company=alliance"`
 - `GET /top?company=&date_from=&date_to=&limit=` — топ продаж
   - пустые параметры следует опускать из запроса
   - `company` нормализуется к нижнему регистру

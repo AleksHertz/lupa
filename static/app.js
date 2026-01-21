@@ -125,10 +125,27 @@ function getSelectedCompany() {
   return companySwitcher?.value || "";
 }
 
+function appendParam(params, key, value) {
+  if (value === undefined || value === null) return;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return;
+    const joined = value.join(",");
+    if (!joined) return;
+    params.append(key, joined);
+    return;
+  }
+  if (typeof value === "string") {
+    if (!value.trim()) return;
+    params.append(key, value);
+    return;
+  }
+  params.append(key, value);
+}
+
 function collectFilters() {
   const sku = document.getElementById("filter-sku").value || "";
   const manufacturer = document.getElementById("filter-manufacturer").value || "";
-  const company = getSelectedCompany();
+  const company = getSelectedCompany()?.toLowerCase() || "";
   const project = document.getElementById("filter-project")?.value || "";
   const dateFrom = document.getElementById("filter-date-from").value;
   const dateTo = document.getElementById("filter-date-to").value;
@@ -169,11 +186,9 @@ uploadForm?.addEventListener("submit", async (event) => {
 
 async function loadWarehouseOptions() {
   if (!warehouseSelect) return;
-  const params = new URLSearchParams({
-    field: "warehouse",
-    q: "",
-    company: getSelectedCompany(),
-  });
+  const params = new URLSearchParams();
+  appendParam(params, "field", "warehouse");
+  appendParam(params, "company", getSelectedCompany()?.toLowerCase());
   const result = await safeFetch(buildUrl(`/filters/suggestions?${params.toString()}`));
   if (!result.ok) {
     warehouseSelect.innerHTML = "";
@@ -208,15 +223,14 @@ async function fetchSeries() {
     return;
   }
 
-  const params = new URLSearchParams({
-    sku,
-    warehouse: warehouse.join(","),
-    manufacturer,
-    company,
-    project,
-    date_from: dateFrom,
-    date_to: dateTo,
-  });
+  const params = new URLSearchParams();
+  appendParam(params, "sku", sku);
+  appendParam(params, "warehouse", warehouse);
+  appendParam(params, "manufacturer", manufacturer);
+  appendParam(params, "company", company);
+  appendParam(params, "project", project);
+  appendParam(params, "date_from", dateFrom);
+  appendParam(params, "date_to", dateTo);
   const result = await safeFetch(buildUrl(`/series?${params.toString()}`));
   if (!result.response?.ok) {
     return;
@@ -333,18 +347,32 @@ async function fetchTop() {
     return;
   }
 
-  const params = new URLSearchParams({
-    sku,
-    manufacturer,
-    company,
-    project,
-    warehouse: warehouse.join(","),
-    date_from: dateFrom,
-    date_to: dateTo,
-    limit,
-  });
-  const result = await safeFetch(buildUrl(`/top?${params.toString()}`));
+  const params = new URLSearchParams();
+  appendParam(params, "sku", sku);
+  appendParam(params, "manufacturer", manufacturer);
+  appendParam(params, "company", company);
+  appendParam(params, "project", project);
+  appendParam(params, "warehouse", warehouse);
+  appendParam(params, "date_from", dateFrom);
+  appendParam(params, "date_to", dateTo);
+  appendParam(params, "limit", limit);
+  const url = buildUrl(`/top?${params.toString()}`);
+  const result = await safeFetch(url);
   if (!result.response?.ok) {
+    let detail = "";
+    if (result.body) {
+      try {
+        detail = JSON.parse(result.body)?.detail || "";
+      } catch (error) {
+        detail = result.body;
+      }
+    }
+    const fallback = detail || result.error?.message || "Не удалось загрузить данные.";
+    setFetchError({
+      url,
+      status: result.response?.status ?? "network",
+      body: fallback,
+    });
     renderTopTable([]);
     return;
   }

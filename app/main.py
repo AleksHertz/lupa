@@ -1,4 +1,5 @@
 import logging
+import unicodedata
 from datetime import date, timedelta
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode
@@ -253,6 +254,16 @@ def top_sales(
     manufacturer = _normalize_blank(manufacturer)
     project_label = _normalize_blank(project_label)
     name = _normalize_blank(name)
+    company_norm = (company or "").strip().lower()
+    company_alias = unicodedata.normalize("NFKC", company_norm).casefold()
+    if company_alias in {"alliance", "альянс"}:
+        company_norm = "alliance"
+    allowed_companies = {"alliance", "vostok"}
+    if company_norm not in allowed_companies:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown company: {company}",
+        )
     date_from = _parse_date(date_from, "date_from")
     date_to = _parse_date(date_to, "date_to")
     if date_from is None and date_to is None:
@@ -262,7 +273,7 @@ def top_sales(
         "items": get_top_sales(
             session=session,
             limit=limit,
-            company=company,
+            company=company_norm,
             warehouses=warehouses,
             sku=sku,
             manufacturer=manufacturer,

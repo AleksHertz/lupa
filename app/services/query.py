@@ -1,3 +1,5 @@
+import logging
+import unicodedata
 from datetime import date, timedelta
 from typing import Any
 
@@ -9,9 +11,11 @@ from app.models import FactDeltaChange, FactSnapshot, Item
 
 SERIES_CACHE = TTLCache(maxsize=256, ttl=300)
 SUGGESTION_CACHE = TTLCache(maxsize=512, ttl=300)
+logger = logging.getLogger(__name__)
 
 
 def _series_cache_key(
+    item_id: int | None,
     sku: str | None,
     warehouses: tuple[str, ...] | None,
     manufacturer: str | None,
@@ -20,7 +24,57 @@ def _series_cache_key(
     date_from: date,
     date_to: date,
 ) -> tuple[Any, ...]:
-    return (sku, warehouses, manufacturer, project_label, company, date_from, date_to)
+    return (
+        item_id,
+        sku,
+        warehouses,
+        manufacturer,
+        project_label,
+        company,
+        date_from,
+        date_to,
+    )
+
+
+def _normalize_sku(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    return normalized.strip().casefold()
+
+
+def resolve_item_id(session: Session, sku: str, company: str | None = None) -> int | None:
+    sku_clean = sku.strip()
+    sku_norm = _normalize_sku(sku_clean)
+    exact_stmt = select(Item.id).where(
+        or_(Item.canonical_sku == sku_clean, Item.sku_norm == sku_norm)
+    )
+    if company:
+        exact_stmt = exact_stmt.where(Item.company == company)
+    exact_matches = session.execute(exact_stmt.order_by(Item.id)).scalars().all()
+    if len(exact_matches) > 1:
+        logger.warning(
+            "Multiple exact matches for sku '%s' (company=%s); using first match.",
+            sku_clean,
+            company,
+        )
+    if exact_matches:
+        return exact_matches[0]
+
+    name_stmt = select(Item.id, Item.name).where(Item.name.ilike(f"%{sku_clean}%"))
+    if company:
+        name_stmt = name_stmt.where(Item.company == company)
+    name_matches = session.execute(
+        name_stmt.order_by(func.length(Item.name), Item.name).limit(2)
+    ).all()
+    if len(name_matches) > 1:
+        logger.warning(
+            "Multiple name matches for sku '%s' (company=%s); using best match '%s'.",
+            sku_clean,
+            company,
+            name_matches[0].name,
+        )
+    if name_matches:
+        return name_matches[0].id
+    return None
 
 
 def _series_item_ids_stmt(
@@ -48,6 +102,7 @@ def _series_item_ids_stmt(
 
 def get_series(
     session: Session,
+    item_id: int | None,
     sku: str | None,
     warehouses: list[str] | None,
     manufacturer: str | None,
@@ -58,7 +113,14 @@ def get_series(
 ) -> dict[str, Any]:
     warehouses_key = tuple(sorted(warehouses)) if warehouses else None
     cache_key = _series_cache_key(
-        sku, warehouses_key, manufacturer, project_label, company, date_from, date_to
+        item_id,
+        sku,
+        warehouses_key,
+        manufacturer,
+        project_label,
+        company,
+        date_from,
+        date_to,
     )
     if cache_key in SERIES_CACHE:
         return SERIES_CACHE[cache_key]
@@ -85,7 +147,10 @@ def get_series(
         .group_by(FactSnapshot.data_date)
         .order_by(FactSnapshot.data_date)
     )
-    if sku or manufacturer or project_label or company:
+    if item_id is not None:
+        delta_stmt = delta_stmt.where(FactDeltaChange.item_id == item_id)
+        snapshot_stmt = snapshot_stmt.where(FactSnapshot.item_id == item_id)
+    elif sku or manufacturer or project_label or company:
         item_ids_stmt = _series_item_ids_stmt(
             sku=sku,
             manufacturer=manufacturer,

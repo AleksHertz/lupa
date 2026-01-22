@@ -48,6 +48,22 @@ function clearFetchError() {
   fetchError.style.display = "none";
 }
 
+function extractErrorMessage(body) {
+  if (!body) return "";
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed?.detail !== undefined) {
+      if (typeof parsed.detail === "string") return parsed.detail;
+      if (parsed.detail?.message) return parsed.detail.message;
+      return JSON.stringify(parsed.detail);
+    }
+    if (parsed?.message) return parsed.message;
+    return JSON.stringify(parsed);
+  } catch (error) {
+    return body;
+  }
+}
+
 async function safeFetch(url, options, expectJson = true) {
   console.log("Fetch", url);
   clearFetchError();
@@ -69,26 +85,28 @@ async function safeFetch(url, options, expectJson = true) {
 
   if (!response.ok) {
     const body = await response.text();
+    const errorMessage = extractErrorMessage(body);
     console.error("Fetch failed", {
       url,
       status: response.status,
       contentType,
       body,
     });
-    setFetchError({ url, status: response.status, body });
-    return { ok: false, response, body };
+    setFetchError({ url, status: response.status, body: errorMessage || body });
+    return { ok: false, response, body, errorMessage };
   }
 
   if (expectJson && !contentType.includes("application/json")) {
     const body = await response.text();
+    const errorMessage = extractErrorMessage(body);
     console.error("Fetch failed", {
       url,
       status: response.status,
       contentType,
       body,
     });
-    setFetchError({ url, status: response.status, body });
-    return { ok: false, response, body };
+    setFetchError({ url, status: response.status, body: errorMessage || body });
+    return { ok: false, response, body, errorMessage };
   }
 
   const payload = expectJson ? await response.json() : null;
@@ -340,17 +358,17 @@ function setSeriesEmptyState(availableRange, onShowAvailable) {
   wrapper.className = "empty-state";
 
   const message = document.createElement("p");
-  message.textContent = "Нет данных…";
+  if (availableRange?.min && availableRange?.max) {
+    message.textContent = `Нет данных за период. Доступно: ${availableRange.min}..${availableRange.max}`;
+  } else {
+    message.textContent = "Нет данных за период.";
+  }
   wrapper.append(message);
 
   if (availableRange?.min && availableRange?.max) {
-    const range = document.createElement("p");
-    range.textContent = `Доступный период: ${availableRange.min} — ${availableRange.max}`;
-    wrapper.append(range);
-
     const button = document.createElement("button");
     button.type = "button";
-    button.textContent = "Show available period";
+    button.textContent = "Показать доступный период";
     button.addEventListener("click", () => {
       onShowAvailable?.(availableRange.min, availableRange.max);
     });
@@ -929,20 +947,6 @@ async function fetchTop() {
   const url = buildUrl(`/top?${params.toString()}`);
   const result = await safeFetch(url);
   if (!result.response?.ok) {
-    let detail = "";
-    if (result.body) {
-      try {
-        detail = JSON.parse(result.body)?.detail || "";
-      } catch (error) {
-        detail = result.body;
-      }
-    }
-    const fallback = detail || result.error?.message || "Не удалось загрузить данные.";
-    setFetchError({
-      url,
-      status: result.response?.status ?? "network",
-      body: fallback,
-    });
     renderTopTable([]);
     return;
   }

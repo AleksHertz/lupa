@@ -166,6 +166,42 @@ def get_series(
         delta_stmt = delta_stmt.where(FactDeltaChange.company == company)
         snapshot_stmt = snapshot_stmt.where(FactSnapshot.company == company)
 
+    availability_range = {"min": None, "max": None}
+    delta_dates_stmt = select(FactDeltaChange.data_date.label("data_date"))
+    snapshot_dates_stmt = select(FactSnapshot.data_date.label("data_date"))
+    if item_id is not None:
+        delta_dates_stmt = delta_dates_stmt.where(FactDeltaChange.item_id == item_id)
+        snapshot_dates_stmt = snapshot_dates_stmt.where(FactSnapshot.item_id == item_id)
+    elif sku or manufacturer or project_label or company:
+        item_ids_stmt = _series_item_ids_stmt(
+            sku=sku,
+            manufacturer=manufacturer,
+            project_label=project_label,
+            company=company,
+        )
+        delta_dates_stmt = delta_dates_stmt.where(FactDeltaChange.item_id.in_(item_ids_stmt))
+        snapshot_dates_stmt = snapshot_dates_stmt.where(
+            FactSnapshot.item_id.in_(item_ids_stmt)
+        )
+    if warehouses:
+        delta_dates_stmt = delta_dates_stmt.where(FactDeltaChange.warehouse.in_(warehouses))
+        snapshot_dates_stmt = snapshot_dates_stmt.where(
+            FactSnapshot.warehouse.in_(warehouses)
+        )
+    if company:
+        delta_dates_stmt = delta_dates_stmt.where(FactDeltaChange.company == company)
+        snapshot_dates_stmt = snapshot_dates_stmt.where(FactSnapshot.company == company)
+    availability_subq = delta_dates_stmt.union_all(snapshot_dates_stmt).subquery()
+    availability_stmt = select(
+        func.min(availability_subq.c.data_date).label("min_date"),
+        func.max(availability_subq.c.data_date).label("max_date"),
+    )
+    availability_row = session.execute(availability_stmt).one()
+    availability_range = {
+        "min": availability_row.min_date.isoformat() if availability_row.min_date else None,
+        "max": availability_row.max_date.isoformat() if availability_row.max_date else None,
+    }
+
     delta_rows = session.execute(delta_stmt).all()
     snapshot_rows = session.execute(snapshot_stmt).all()
     delta_map = {
@@ -205,6 +241,7 @@ def get_series(
         "replenished_qty": replenished,
         "price": prices,
         "stock_qty": stock_qty,
+        "available_range": availability_range,
         "kpi": {
             "sold_total": sold_total,
             "replenished_total": replenished_total,

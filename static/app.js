@@ -480,6 +480,7 @@ function renderTopTable(items) {
       <td>${item.last_price ?? "—"}</td>
     `;
     row.addEventListener("click", () => {
+      row.scrollIntoView({ block: "nearest" });
       fetchSeriesForItem(item);
     });
     topTableBody.append(row);

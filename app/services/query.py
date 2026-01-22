@@ -611,17 +611,14 @@ def get_top_sales(
     if group_by_warehouse:
         group_by_columns.append(FactDeltaChange.warehouse)
 
-    snapshot_group_columns = [FactSnapshot.item_id]
     snapshot_select_columns = [
         FactSnapshot.item_id.label("item_id"),
-        func.max(FactSnapshot.price).label("last_price"),
+        FactSnapshot.warehouse.label("warehouse"),
+        FactSnapshot.price.label("last_price"),
     ]
-    if group_by_warehouse:
-        snapshot_group_columns.append(FactSnapshot.warehouse)
-        snapshot_select_columns.append(FactSnapshot.warehouse.label("warehouse"))
     snapshot_stmt = select(*snapshot_select_columns).join(
         Item, Item.id == FactSnapshot.item_id
-    )
+    ).distinct(FactSnapshot.item_id, FactSnapshot.warehouse)
 
     if company:
         snapshot_stmt = snapshot_stmt.where(FactSnapshot.company == company).where(
@@ -648,16 +645,19 @@ def get_top_sales(
     if date_to:
         snapshot_stmt = snapshot_stmt.where(FactSnapshot.data_date <= date_to)
 
-    snapshot_subq = snapshot_stmt.group_by(*snapshot_group_columns).subquery()
+    snapshot_stmt = snapshot_stmt.order_by(
+        FactSnapshot.item_id,
+        FactSnapshot.warehouse,
+        FactSnapshot.data_date.desc(),
+    )
 
-    join_condition = FactDeltaChange.item_id == snapshot_subq.c.item_id
+    snapshot_subq = snapshot_stmt.subquery()
+
+    join_condition = (FactDeltaChange.item_id == snapshot_subq.c.item_id) & (
+        FactDeltaChange.warehouse == snapshot_subq.c.warehouse
+    )
     if group_by_warehouse:
-        join_condition = join_condition & (
-            FactDeltaChange.warehouse == snapshot_subq.c.warehouse
-        )
-        warehouse_column = func.coalesce(
-            snapshot_subq.c.warehouse, FactDeltaChange.warehouse
-        )
+        warehouse_column = FactDeltaChange.warehouse
     else:
         warehouse_column = func.min(FactDeltaChange.warehouse)
 

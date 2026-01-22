@@ -335,24 +335,25 @@ def top_sales(
             "date_from": date_from.isoformat() if date_from else None,
             "date_to": date_to.isoformat() if date_to else None,
             "warehouses": warehouses,
+            "limit": limit,
             "sku": sku,
         },
     )
-    return {
-        "items": get_top_sales(
-            session=session,
-            limit=limit,
-            company=company_norm,
-            warehouses=warehouses,
-            sku=sku,
-            manufacturer=manufacturer,
-            name=name,
-            project=project_label,
-            group_by_warehouse=group_by_warehouse,
-            date_from=date_from,
-            date_to=date_to,
-        )
-    }
+    items = get_top_sales(
+        session=session,
+        limit=limit,
+        company=company_norm,
+        warehouses=warehouses,
+        sku=sku,
+        manufacturer=manufacturer,
+        name=name,
+        project=project_label,
+        group_by_warehouse=group_by_warehouse,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    logger.info("Top results", extra={"rows_count": len(items)})
+    return {"items": items}
 
 
 @app.get("/availability")

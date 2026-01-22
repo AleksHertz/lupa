@@ -137,7 +137,8 @@ function getTopLimit() {
 }
 
 function getSelectedCompany() {
-  return companySwitcher?.value || "";
+  const value = companySwitcher?.value?.trim();
+  return value ? value.toLowerCase() : "alliance";
 }
 
 function appendParam(params, key, value) {
@@ -160,7 +161,7 @@ function appendParam(params, key, value) {
 function collectFilters() {
   const sku = document.getElementById("filter-sku").value || "";
   const manufacturer = document.getElementById("filter-manufacturer").value || "";
-  const company = getSelectedCompany()?.toLowerCase() || "";
+  const company = getSelectedCompany();
   const project = document.getElementById("filter-project")?.value || "";
   const dateFrom = document.getElementById("filter-date-from").value;
   const dateTo = document.getElementById("filter-date-to").value;
@@ -729,7 +730,7 @@ async function loadWarehouseOptions() {
   if (!warehouseSelect) return;
   const params = new URLSearchParams();
   appendParam(params, "field", "warehouse");
-  appendParam(params, "company", getSelectedCompany()?.toLowerCase());
+  appendParam(params, "company", getSelectedCompany());
   const result = await safeFetch(buildUrl(`/filters/suggestions?${params.toString()}`));
   if (!result.ok) {
     warehouseSelect.innerHTML = "";
@@ -796,12 +797,13 @@ async function fetchSeriesWithParams({
   if (!dateFrom || !dateTo) {
     return;
   }
+  const resolvedCompany = company || getSelectedCompany();
   const params = new URLSearchParams();
   appendParam(params, "item_id", itemId);
   appendParam(params, "sku", sku);
   appendParam(params, "warehouses", warehouses);
   appendParam(params, "manufacturer", manufacturer);
-  appendParam(params, "company", company);
+  appendParam(params, "company", resolvedCompany);
   appendParam(params, "project", project);
   appendParam(params, "date_from", dateFrom);
   appendParam(params, "date_to", dateTo);
@@ -813,7 +815,7 @@ async function fetchSeriesWithParams({
     itemId,
     sku,
     manufacturer,
-    company,
+    company: resolvedCompany,
     project,
     warehouses,
     dateFrom,

@@ -485,13 +485,13 @@ function buildWarehouseTimeline(warehouseMap, dates) {
   return { sold, replenished, stock, price };
 }
 
-function buildHoverCustomData({ dates, warehouse, stock, sold, replenished, price }) {
+function buildHoverCustomData({ dates, warehouse, stock, sold, replenished, priceDisplay }) {
   return dates.map((date, index) => [
     warehouse ?? "ALL",
     formatNumber(stock[index]),
     formatNumber(sold[index]),
     formatNumber(replenished[index]),
-    formatCurrency(price[index]),
+    priceDisplay[index],
     date,
   ]);
 }
@@ -505,6 +505,72 @@ function buildHoverTemplate() {
     "Пополнено: %{customdata[3]}<br>" +
     "Цена: %{customdata[4]}<extra></extra>"
   );
+}
+
+function buildPriceDisplayByDate({ dates, warehouses, warehouseTimelines }) {
+  const hasMultipleWarehouses = warehouses.length > 1;
+  const priceDisplay = [];
+  let isUniformAcrossWarehouses = true;
+
+  dates.forEach((date, index) => {
+    const pricesForDate = warehouses.map((warehouse) => {
+      const timeline = warehouseTimelines.get(warehouse);
+      const price = timeline?.price?.[index] ?? null;
+      return { warehouse, price };
+    });
+    const numericPrices = pricesForDate
+      .map((entry) => entry.price)
+      .filter((price) => price !== null && price !== undefined);
+    const uniquePrices = new Set(numericPrices.map((price) => `${price}`));
+
+    if (hasMultipleWarehouses && uniquePrices.size > 1) {
+      isUniformAcrossWarehouses = false;
+      const lines = pricesForDate.map((entry) => {
+        const label = escapeHtml(entry.warehouse ?? "ALL");
+        return `${label}: ${formatCurrency(entry.price)}`;
+      });
+      priceDisplay.push(lines.join("<br>"));
+    } else {
+      const displayPrice = numericPrices.length > 0 ? numericPrices[0] : null;
+      priceDisplay.push(formatCurrency(displayPrice));
+    }
+  });
+
+  return { priceDisplay, isUniformAcrossWarehouses };
+}
+
+function buildPriceChangeMarkers(priceTimeline) {
+  const up = [];
+  const down = [];
+  let previousValue = null;
+
+  priceTimeline.forEach((value, index) => {
+    if (value === null || value === undefined) {
+      up.push(null);
+      down.push(null);
+      previousValue = null;
+      return;
+    }
+    if (index === 0 || previousValue === null || previousValue === undefined) {
+      up.push(null);
+      down.push(null);
+      previousValue = value;
+      return;
+    }
+    if (value > previousValue) {
+      up.push(value);
+      down.push(null);
+    } else if (value < previousValue) {
+      up.push(null);
+      down.push(value);
+    } else {
+      up.push(null);
+      down.push(null);
+    }
+    previousValue = value;
+  });
+
+  return { up, down };
 }
 
 function createWarehouseColors(count) {
@@ -574,18 +640,14 @@ function renderSeries(payload) {
   };
   const aggregatedPriceSum = Array(dates.length).fill(0);
   const aggregatedPriceCount = Array(dates.length).fill(0);
+  const warehouseTimelines = new Map();
+  const warehouseEntries = [];
 
   warehouses.forEach((warehouse, index) => {
     const warehouseMap = byWarehouse.get(warehouse) ?? new Map();
     const timeline = buildWarehouseTimeline(warehouseMap, dates);
-    const customData = buildHoverCustomData({
-      dates,
-      warehouse,
-      stock: timeline.stock,
-      sold: timeline.sold,
-      replenished: timeline.replenished,
-      price: timeline.price,
-    });
+    warehouseTimelines.set(warehouse, timeline);
+    warehouseEntries.push({ warehouse, index, timeline });
 
     for (let i = 0; i < dates.length; i += 1) {
       aggregated.sold[i] += timeline.sold[i];
@@ -598,6 +660,23 @@ function renderSeries(payload) {
         aggregatedPriceCount[i] += 1;
       }
     }
+  });
+
+  const { priceDisplay, isUniformAcrossWarehouses } = buildPriceDisplayByDate({
+    dates,
+    warehouses,
+    warehouseTimelines,
+  });
+
+  warehouseEntries.forEach(({ warehouse, index, timeline }) => {
+    const customData = buildHoverCustomData({
+      dates,
+      warehouse,
+      stock: timeline.stock,
+      sold: timeline.sold,
+      replenished: timeline.replenished,
+      priceDisplay,
+    });
 
     if (stockToggle?.checked && timeline.stock.some((value) => value !== null)) {
       traces.push({
@@ -615,13 +694,6 @@ function renderSeries(payload) {
     }
 
     if (timeline.price.some((value) => value !== null)) {
-      const changeMarkers = timeline.price.map((value, i) => {
-        if (value === null || value === undefined) return null;
-        if (i === 0) return value;
-        const prev = timeline.price[i - 1];
-        return prev !== value ? value : null;
-      });
-
       traces.push({
         x: dates,
         y: timeline.price,
@@ -636,18 +708,33 @@ function renderSeries(payload) {
         showlegend: !hasMultipleWarehouses,
       });
 
-      traces.push({
-        x: dates,
-        y: changeMarkers,
-        name: hasMultipleWarehouses ? `Изменение цены — ${warehouse}` : "Изменение цены",
-        yaxis: "y3",
-        type: "scatter",
-        mode: "markers",
-        marker: { color: "#f97316", size: 6, symbol: "circle" },
-        customdata: customData,
-        hovertemplate: hoverTemplate,
-        showlegend: false,
-      });
+      if (!hasMultipleWarehouses || !isUniformAcrossWarehouses) {
+        const changeMarkers = buildPriceChangeMarkers(timeline.price);
+        traces.push({
+          x: dates,
+          y: changeMarkers.up,
+          name: hasMultipleWarehouses ? `Рост цены — ${warehouse}` : "Рост цены",
+          yaxis: "y3",
+          type: "scatter",
+          mode: "markers",
+          marker: { color: "#16a34a", size: 7, symbol: "triangle-up" },
+          customdata: customData,
+          hovertemplate: hoverTemplate,
+          showlegend: false,
+        });
+        traces.push({
+          x: dates,
+          y: changeMarkers.down,
+          name: hasMultipleWarehouses ? `Снижение цены — ${warehouse}` : "Снижение цены",
+          yaxis: "y3",
+          type: "scatter",
+          mode: "markers",
+          marker: { color: "#dc2626", size: 7, symbol: "triangle-down" },
+          customdata: customData,
+          hovertemplate: hoverTemplate,
+          showlegend: false,
+        });
+      }
     }
 
     if (showDetailed) {
@@ -686,7 +773,7 @@ function renderSeries(payload) {
       stock: aggregated.stock,
       sold: aggregated.sold,
       replenished: aggregated.replenished,
-      price: aggregated.price,
+      priceDisplay,
     });
 
     traces.push({
@@ -710,6 +797,47 @@ function renderSeries(payload) {
       customdata: customData,
       hovertemplate: hoverTemplate,
     });
+  }
+
+  if (hasMultipleWarehouses && isUniformAcrossWarehouses) {
+    aggregated.price = aggregatedPriceSum.map((sum, index) =>
+      aggregatedPriceCount[index] > 0 ? sum / aggregatedPriceCount[index] : null
+    );
+    const customData = buildHoverCustomData({
+      dates,
+      warehouse: "ALL",
+      stock: aggregated.stock,
+      sold: aggregated.sold,
+      replenished: aggregated.replenished,
+      priceDisplay,
+    });
+    if (aggregated.price.some((value) => value !== null && value !== undefined)) {
+      const changeMarkers = buildPriceChangeMarkers(aggregated.price);
+      traces.push({
+        x: dates,
+        y: changeMarkers.up,
+        name: "Рост цены",
+        yaxis: "y3",
+        type: "scatter",
+        mode: "markers",
+        marker: { color: "#16a34a", size: 7, symbol: "triangle-up" },
+        customdata: customData,
+        hovertemplate: hoverTemplate,
+        showlegend: false,
+      });
+      traces.push({
+        x: dates,
+        y: changeMarkers.down,
+        name: "Снижение цены",
+        yaxis: "y3",
+        type: "scatter",
+        mode: "markers",
+        marker: { color: "#dc2626", size: 7, symbol: "triangle-down" },
+        customdata: customData,
+        hovertemplate: hoverTemplate,
+        showlegend: false,
+      });
+    }
   }
 
   const layout = {

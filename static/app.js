@@ -169,8 +169,9 @@ function appendParam(params, key, value) {
     return;
   }
   if (typeof value === "string") {
-    if (!value.trim()) return;
-    params.append(key, value);
+    const normalized = key === "company" ? value.toLowerCase() : value;
+    if (!normalized.trim()) return;
+    params.append(key, normalized);
     return;
   }
   params.append(key, value);

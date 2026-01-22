@@ -1,3 +1,5 @@
+const DEBUG = true;
+
 const uploadForm = document.getElementById("upload-form");
 const uploadStatus = document.getElementById("upload-status");
 const applyFilters = document.getElementById("apply-filters");
@@ -18,8 +20,6 @@ const fetchError = document.getElementById("fetch-error");
 
 const BASE_URL = window.BASE_URL ?? "";
 const buildUrl = (path) => `${BASE_URL}${path}`;
-const DEBUG = window.DEBUG === true;
-
 const kpiSold = document.getElementById("kpi-sold");
 const kpiReplenished = document.getElementById("kpi-replenished");
 const kpiMaxSold = document.getElementById("kpi-max-sold");
@@ -68,33 +68,41 @@ function extractErrorMessage(body) {
 }
 
 async function safeFetch(url, options, expectJson = true) {
-  console.log("Fetch", url);
+  if (DEBUG) {
+    console.log("Fetch", url);
+  }
   clearFetchError();
   let response;
   try {
     response = await fetch(url, options);
   } catch (error) {
-    console.error("Fetch failed", { url, error });
+    if (DEBUG) {
+      console.error("Fetch failed", { url, error });
+    }
     setFetchError({ url, status: "network", body: error.message });
     return { ok: false, error };
   }
 
   const contentType = response.headers.get("content-type") || "";
-  console.log("Fetch response", {
-    url,
-    status: response.status,
-    contentType,
-  });
+  if (DEBUG) {
+    console.log("Fetch response", {
+      url,
+      status: response.status,
+      contentType,
+    });
+  }
 
   if (!response.ok) {
     const body = await response.text();
     const errorMessage = extractErrorMessage(body);
-    console.error("Fetch failed", {
-      url,
-      status: response.status,
-      contentType,
-      body,
-    });
+    if (DEBUG) {
+      console.error("Fetch failed", {
+        url,
+        status: response.status,
+        contentType,
+        body,
+      });
+    }
     setFetchError({ url, status: response.status, body: errorMessage || body });
     return { ok: false, response, body, errorMessage };
   }
@@ -102,12 +110,14 @@ async function safeFetch(url, options, expectJson = true) {
   if (expectJson && !contentType.includes("application/json")) {
     const body = await response.text();
     const errorMessage = extractErrorMessage(body);
-    console.error("Fetch failed", {
-      url,
-      status: response.status,
-      contentType,
-      body,
-    });
+    if (DEBUG) {
+      console.error("Fetch failed", {
+        url,
+        status: response.status,
+        contentType,
+        body,
+      });
+    }
     setFetchError({ url, status: response.status, body: errorMessage || body });
     return { ok: false, response, body, errorMessage };
   }
@@ -324,6 +334,16 @@ function applyTopFilter() {
 
 function setSelectedItem(item, options = {}) {
   if (!item) return;
+  if (DEBUG) {
+    const { warehouses, dateFrom, dateTo } = collectFilters();
+    console.log("selectedRow", {
+      itemId: item?.item_id,
+      sku: item?.canonical_sku ?? item?.sku,
+      warehouses,
+      dateFrom,
+      dateTo,
+    });
+  }
   selectedTopKey = getItemKey(item);
   updateSelectionIndex();
   renderTopTable(filteredTopItems);
@@ -926,7 +946,15 @@ async function loadWarehouseOptions() {
   const params = new URLSearchParams();
   appendParam(params, "field", "warehouse");
   appendParam(params, "company", getSelectedCompany());
-  const result = await safeFetch(buildUrl(`/filters/suggestions?${params.toString()}`));
+  const url = buildUrl(`/filters/suggestions?${params.toString()}`);
+  if (DEBUG) {
+    console.log("filtersSuggestionsParams", {
+      field: "warehouse",
+      company: getSelectedCompany(),
+    });
+    console.log("filtersSuggestionsUrl", url);
+  }
+  const result = await safeFetch(url);
   if (!result.ok) {
     warehouseList.innerHTML = "";
     const message = document.createElement("div");
@@ -1006,9 +1034,27 @@ async function fetchSeriesWithParams({
   appendParam(params, "project", project);
   appendParam(params, "date_from", dateFrom);
   appendParam(params, "date_to", dateTo);
-  const result = await safeFetch(buildUrl(`/series?${params.toString()}`));
+  const url = buildUrl(`/series?${params.toString()}`);
+  if (DEBUG) {
+    console.log("seriesParams", {
+      itemId,
+      sku,
+      manufacturer,
+      company: resolvedCompany,
+      project,
+      warehouses,
+      dateFrom,
+      dateTo,
+    });
+    console.log("seriesUrl", url);
+  }
+  const result = await safeFetch(url);
   if (!result.response?.ok) {
     return;
+  }
+  if (DEBUG) {
+    const seriesCount = Array.isArray(result.payload?.series) ? result.payload.series.length : 0;
+    console.log("seriesResponseSize", { points: seriesCount });
   }
   lastSeriesParams = {
     itemId,
@@ -1127,12 +1173,28 @@ async function fetchTop() {
   appendParam(params, "date_to", dateTo);
   appendParam(params, "limit", limit);
   const url = buildUrl(`/top?${params.toString()}`);
+  if (DEBUG) {
+    console.log("topParams", {
+      sku,
+      manufacturer,
+      company,
+      project,
+      warehouses,
+      dateFrom,
+      dateTo,
+      limit,
+    });
+    console.log("topUrl", url);
+  }
   const result = await safeFetch(url);
   if (!result.response?.ok) {
     renderTopTable([]);
     return;
   }
   const items = Array.isArray(result.payload) ? result.payload : result.payload.items || [];
+  if (DEBUG) {
+    console.log("topResponseSize", { rows: items.length });
+  }
   topItems = items;
   warehouseCounts = buildWarehouseCounts(items);
   applyTopFilter();

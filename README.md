@@ -58,3 +58,9 @@ Railway Pre-deploy Command = python -m alembic upgrade head
   - примеры:
     - `curl ".../top?company=Alliance&date_from=2025-10-24&date_to=2026-01-21&limit=100"`
     - `curl ".../top?company=alliance&date_from=2025-10-24&date_to=2026-01-21"`
+
+## Manual verification
+
+```bash
+curl ".../top?company=Alliance&date_from=2025-09-07&date_to=2025-09-08&limit=10&warehouse=Варшавка"
+```

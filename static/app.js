@@ -267,7 +267,6 @@ function hasMultipleWarehouses(item) {
 }
 
 function getWarehouseLabel(item) {
-  if (hasMultipleWarehouses(item)) return "ALL";
   return item?.warehouse ?? "ALL";
 }
 
@@ -920,6 +919,7 @@ function renderTopTable(items) {
         </span>
       </td>
       <td>${getWarehouseLabel(item)}</td>
+      <td>${escapeHtml(item.group_name ?? "—")}</td>
       <td>${formatNumber(item.sold_total)}</td>
       <td>${formatNumber(item.replenished_total)}</td>
       <td>${formatCurrency(item.last_price)}</td>

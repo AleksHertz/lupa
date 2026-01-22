@@ -123,18 +123,31 @@
           </label>
         </div>
       </div>
+      <div class="top-controls">
+        <label class="inline">
+          <span>Search</span>
+          <input type="search" id="top-search" placeholder="SKU or name" />
+        </label>
+        <div class="top-nav">
+          <button type="button" id="top-prev">Prev</button>
+          <button type="button" id="top-next">Next</button>
+        </div>
+        <label class="inline">
+          <span>Jump to rank</span>
+          <input type="number" id="top-jump-rank" min="1" />
+        </label>
+        <button type="button" id="top-jump-btn">Go</button>
+      </div>
       <div class="table-wrap">
         <table class="data-table">
           <thead>
             <tr>
               <th>Rank</th>
-              <th>SKU</th>
+              <th>Canonical SKU</th>
               <th>Name</th>
-              <th>Manufacturer</th>
-              <th>Brand</th>
               <th>Warehouse</th>
-              <th>Sold qty</th>
-              <th>Replenished qty</th>
+              <th>Sold total</th>
+              <th>Replenished total</th>
               <th>Last price</th>
             </tr>
           </thead>

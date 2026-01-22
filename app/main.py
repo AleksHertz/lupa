@@ -29,7 +29,6 @@ from app.services.query import (
     get_series_v2,
     get_suggestions,
     get_top_sales,
-    resolve_item_id,
 )
 
 
@@ -180,11 +179,8 @@ def upload_file(
 
 @app.get("/series")
 def series(
-    item_id: int | None = Query(default=None),
-    sku: str | None = Query(default=None),
+    item_id: int = Query(...),
     warehouses: list[str] | None = Query(default=None, alias="warehouses"),
-    manufacturer: str | None = Query(default=None),
-    project_label: str | None = Query(default=None),
     company: str | None = Query(default="alliance"),
     date_from: date = Query(...),
     date_to: date = Query(...),
@@ -197,9 +193,6 @@ def series(
         return stripped or None
 
     warehouses = _normalize_csv_list(warehouses)
-    sku = _normalize_blank(sku)
-    manufacturer = _normalize_blank(manufacturer)
-    project_label = _normalize_blank(project_label)
     company_norm = _normalize_blank(company) or "alliance"
     company_norm = company_norm.lower()
     company_alias = unicodedata.normalize("NFKC", company_norm).casefold()
@@ -211,13 +204,6 @@ def series(
             status_code=400,
             detail=f"Unknown company: {company}",
         )
-    if item_id is None and sku:
-        item_id = resolve_item_id(session=session, sku=sku, company=company_norm)
-        if item_id is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"No item found for sku or name: {sku}",
-            )
     return get_series_v2(
         session=session,
         item_id=item_id,

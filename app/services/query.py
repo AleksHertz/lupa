@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from cachetools import TTLCache
-from sqlalchemy import Date, func, or_, select, text
+from sqlalchemy import Date, and_, func, literal, or_, select, text, true, union_all
 from sqlalchemy.orm import Session
 
 from app.models import FactDeltaChange, FactSnapshot, Item
@@ -274,20 +274,16 @@ def get_series_v2(
             else None,
         }
 
-    def _empty_series_response(message: str) -> dict[str, Any]:
-        payload = {
+    def _empty_series_response() -> dict[str, Any]:
+        return {
             "item": item_data,
             "summary": {"rank": None, "sold_total": 0, "replenished_total": 0},
             "series": [],
             "available_range": availability_range,
-            "message": message,
         }
-        if availability_range["min"] and availability_range["max"]:
-            payload["suggested_range"] = dict(availability_range)
-        return payload
 
     if availability_range["min"] is None and availability_range["max"] is None:
-        return _empty_series_response("No data for selected period.")
+        return _empty_series_response()
 
     calendar = (
         select(
@@ -302,11 +298,34 @@ def get_series_v2(
         .subquery()
     )
 
+    if warehouses:
+        warehouse_subq = union_all(
+            *[select(literal(warehouse).label("warehouse")) for warehouse in warehouses]
+        ).subquery()
+    else:
+        snapshot_warehouses = (
+            select(FactSnapshot.warehouse.label("warehouse"))
+            .where(FactSnapshot.data_date >= date_from)
+            .where(FactSnapshot.data_date <= date_to)
+            .where(FactSnapshot.item_id == item_id)
+        )
+        delta_warehouses = (
+            select(FactDeltaChange.warehouse.label("warehouse"))
+            .where(FactDeltaChange.data_date >= date_from)
+            .where(FactDeltaChange.data_date <= date_to)
+            .where(FactDeltaChange.item_id == item_id)
+        )
+        if company:
+            snapshot_warehouses = snapshot_warehouses.where(FactSnapshot.company == company)
+            delta_warehouses = delta_warehouses.where(FactDeltaChange.company == company)
+        warehouse_subq = snapshot_warehouses.union(delta_warehouses).subquery()
+
     delta_stmt = (
         select(
             FactDeltaChange.data_date.label("data_date"),
+            FactDeltaChange.warehouse.label("warehouse"),
             func.sum(FactDeltaChange.sold_qty).label("sold"),
-            func.sum(FactDeltaChange.replenished_qty).label("replenished"),
+            func.sum(FactDeltaChange.replenished_qty).label("repl"),
         )
         .where(FactDeltaChange.data_date >= date_from)
         .where(FactDeltaChange.data_date <= date_to)
@@ -315,6 +334,7 @@ def get_series_v2(
     snapshot_stmt = (
         select(
             FactSnapshot.data_date.label("data_date"),
+            FactSnapshot.warehouse.label("warehouse"),
             func.sum(FactSnapshot.stock_qty).label("stock"),
             func.avg(FactSnapshot.price).label("price"),
         )
@@ -357,29 +377,42 @@ def get_series_v2(
     has_snapshot = session.execute(snapshot_exists_stmt.limit(1)).first()
 
     if not has_delta and not has_snapshot:
-        message = "No data for selected period."
-        if availability_range["min"] and availability_range["max"]:
-            message = (
-                "No data for selected period. Available: "
-                f"{availability_range['min']}..{availability_range['max']}"
-            )
-        return _empty_series_response(message)
+        return _empty_series_response()
 
-    delta_stmt = delta_stmt.group_by(FactDeltaChange.data_date).subquery()
-    snapshot_stmt = snapshot_stmt.group_by(FactSnapshot.data_date).subquery()
+    delta_stmt = (
+        delta_stmt.group_by(FactDeltaChange.data_date, FactDeltaChange.warehouse)
+        .subquery()
+    )
+    snapshot_stmt = (
+        snapshot_stmt.group_by(FactSnapshot.data_date, FactSnapshot.warehouse)
+        .subquery()
+    )
 
     stmt = (
         select(
             calendar.c.data_date,
+            warehouse_subq.c.warehouse,
             func.coalesce(delta_stmt.c.sold, 0).label("sold"),
-            func.coalesce(delta_stmt.c.replenished, 0).label("replenished"),
+            func.coalesce(delta_stmt.c.repl, 0).label("repl"),
             snapshot_stmt.c.stock,
             snapshot_stmt.c.price,
         )
-        .select_from(calendar)
-        .outerjoin(delta_stmt, delta_stmt.c.data_date == calendar.c.data_date)
-        .outerjoin(snapshot_stmt, snapshot_stmt.c.data_date == calendar.c.data_date)
-        .order_by(calendar.c.data_date)
+        .select_from(calendar.join(warehouse_subq, true()))
+        .outerjoin(
+            delta_stmt,
+            and_(
+                delta_stmt.c.data_date == calendar.c.data_date,
+                delta_stmt.c.warehouse == warehouse_subq.c.warehouse,
+            ),
+        )
+        .outerjoin(
+            snapshot_stmt,
+            and_(
+                snapshot_stmt.c.data_date == calendar.c.data_date,
+                snapshot_stmt.c.warehouse == warehouse_subq.c.warehouse,
+            ),
+        )
+        .order_by(warehouse_subq.c.warehouse, calendar.c.data_date)
     )
     rows = session.execute(stmt).mappings().all()
     series: list[dict[str, Any]] = []
@@ -387,15 +420,16 @@ def get_series_v2(
     replenished_total = 0
     for row in rows:
         sold_value = int(row.sold or 0)
-        repl_value = int(row.replenished or 0)
+        repl_value = int(row.repl or 0)
         sold_total += sold_value
         replenished_total += repl_value
         series.append(
             {
                 "date": row.data_date.isoformat(),
-                "sold": sold_value,
-                "replenished": repl_value,
+                "warehouse": row.warehouse,
                 "stock": int(row.stock) if row.stock is not None else None,
+                "sold": sold_value,
+                "repl": repl_value,
                 "price": float(row.price) if row.price is not None else None,
             }
         )

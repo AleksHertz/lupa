@@ -438,9 +438,11 @@ function buildSeriesByWarehouse(series) {
       stock: null,
       price: null,
     };
+    const replValue =
+      entry.repl !== undefined && entry.repl !== null ? entry.repl : entry.replenished ?? 0;
 
     existing.sold += entry.sold ?? 0;
-    existing.replenished += entry.replenished ?? 0;
+    existing.replenished += replValue;
     if (entry.stock !== null && entry.stock !== undefined) {
       existing.stock = entry.stock;
     }
@@ -462,7 +464,6 @@ function buildWarehouseTimeline(warehouseMap, dates) {
   const stock = [];
   const price = [];
   let lastStock = null;
-  let lastPrice = null;
 
   dates.forEach((date) => {
     const entry = warehouseMap.get(date);
@@ -474,14 +475,11 @@ function buildWarehouseTimeline(warehouseMap, dates) {
     if (stockValue !== null) {
       lastStock = stockValue;
     }
-    if (priceValue !== null) {
-      lastPrice = priceValue;
-    }
 
     sold.push(soldValue);
     replenished.push(replValue);
     stock.push(stockValue !== null ? stockValue : lastStock);
-    price.push(priceValue !== null ? priceValue : lastPrice);
+    price.push(priceValue);
   });
 
   return { sold, replenished, stock, price };
@@ -558,6 +556,12 @@ function renderSeries(payload) {
   const warehouses = Array.from(byWarehouse.keys());
   const hasMultipleWarehouses = warehouses.length > 1;
   const showDetailed = Boolean(detailedToggle?.checked && hasMultipleWarehouses);
+  if (DEBUG) {
+    console.log("seriesSummary", {
+      seriesSize: series.length,
+      warehouseCount: warehouses.length,
+    });
+  }
   const hoverTemplate = buildHoverTemplate();
   const traces = [];
   const colors = createWarehouseColors(warehouses.length);

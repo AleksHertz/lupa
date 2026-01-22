@@ -582,6 +582,9 @@ function createWarehouseColors(count) {
     "#7c3aed",
     "#db2777",
     "#facc15",
+    "#14b8a6",
+    "#f43f5e",
+    "#84cc16",
   ];
   const colors = [];
   for (let index = 0; index < count; index += 1) {
@@ -678,7 +681,12 @@ function renderSeries(payload) {
       priceDisplay,
     });
 
-    if (stockToggle?.checked && timeline.stock.some((value) => value !== null)) {
+    const legendGroup = `warehouse-${index}`;
+    const legendTitle = warehouse ?? "ALL";
+
+    const hasStockTrace = stockToggle?.checked && timeline.stock.some((value) => value !== null);
+
+    if (hasStockTrace) {
       traces.push({
         x: dates,
         y: timeline.stock,
@@ -690,6 +698,25 @@ function renderSeries(payload) {
         line: { color: colors[index], width: 2 },
         customdata: customData,
         hovertemplate: hoverTemplate,
+        legendgroup: legendGroup,
+        legendgrouptitle: { text: legendTitle },
+        showlegend: hasMultipleWarehouses,
+      });
+    }
+
+    if (!hasStockTrace && hasMultipleWarehouses) {
+      traces.push({
+        x: [dates[0]],
+        y: [null],
+        name: warehouse ?? "ALL",
+        type: "scatter",
+        mode: "lines",
+        line: { color: colors[index], width: 2 },
+        hoverinfo: "skip",
+        legendgroup: legendGroup,
+        legendgrouptitle: { text: legendTitle },
+        showlegend: true,
+        visible: "legendonly",
       });
     }
 
@@ -705,7 +732,8 @@ function renderSeries(payload) {
         line: { color: "#f97316", width: 1 },
         customdata: customData,
         hovertemplate: hoverTemplate,
-        showlegend: !hasMultipleWarehouses,
+        legendgroup: legendGroup,
+        showlegend: !hasMultipleWarehouses && !stockToggle?.checked,
       });
 
       if (!hasMultipleWarehouses || !isUniformAcrossWarehouses) {
@@ -721,6 +749,7 @@ function renderSeries(payload) {
           customdata: customData,
           hovertemplate: hoverTemplate,
           showlegend: false,
+          legendgroup: legendGroup,
         });
         traces.push({
           x: dates,
@@ -733,6 +762,7 @@ function renderSeries(payload) {
           customdata: customData,
           hovertemplate: hoverTemplate,
           showlegend: false,
+          legendgroup: legendGroup,
         });
       }
     }
@@ -744,9 +774,11 @@ function renderSeries(payload) {
         name: `Продано — ${warehouse}`,
         type: "bar",
         yaxis: "y2",
-        marker: { color: colors[index] },
+        marker: { color: colors[index], opacity: 0.45 },
         customdata: customData,
         hovertemplate: hoverTemplate,
+        legendgroup: legendGroup,
+        showlegend: false,
       });
 
       traces.push({
@@ -755,9 +787,11 @@ function renderSeries(payload) {
         name: `Пополнено — ${warehouse}`,
         type: "bar",
         yaxis: "y2",
-        marker: { color: colors[index], opacity: 0.45 },
+        marker: { color: colors[index], opacity: 0.25 },
         customdata: customData,
         hovertemplate: hoverTemplate,
+        legendgroup: legendGroup,
+        showlegend: false,
       });
     }
   });
@@ -782,7 +816,7 @@ function renderSeries(payload) {
       name: "Продано",
       type: "bar",
       yaxis: "y2",
-      marker: { color: "#2563eb" },
+      marker: { color: "#2563eb", opacity: 0.35 },
       customdata: customData,
       hovertemplate: hoverTemplate,
     });
@@ -793,7 +827,7 @@ function renderSeries(payload) {
       name: "Пополнено",
       type: "bar",
       yaxis: "y2",
-      marker: { color: "#16a34a" },
+      marker: { color: "#16a34a", opacity: 0.25 },
       customdata: customData,
       hovertemplate: hoverTemplate,
     });
@@ -855,6 +889,9 @@ function renderSeries(payload) {
       position: 1.08,
     },
     margin: { t: 30 },
+    legend: {
+      groupclick: "togglegroup",
+    },
   };
 
   Plotly.newPlot("chart", traces, layout, {

@@ -367,16 +367,16 @@ function setSeriesEmptyState(availableRange, onShowAvailable) {
 
   const message = document.createElement("p");
   if (availableRange?.min && availableRange?.max) {
-    message.textContent = `Нет данных за период. Доступно: ${availableRange.min}..${availableRange.max}`;
+    message.textContent = `Нет данных за выбранный период. Доступно: ${availableRange.min}..${availableRange.max}.`;
   } else {
-    message.textContent = "Нет данных за период.";
+    message.textContent = "Нет данных за выбранный период.";
   }
   wrapper.append(message);
 
   if (availableRange?.min && availableRange?.max) {
     const button = document.createElement("button");
     button.type = "button";
-    button.textContent = "Показать доступный период";
+    button.textContent = "Поставить доступный диапазон";
     button.addEventListener("click", () => {
       onShowAvailable?.(availableRange.min, availableRange.max);
     });

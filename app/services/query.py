@@ -220,7 +220,7 @@ def get_series_v2(
     session: Session,
     item_id: int | None,
     company: str | None,
-    warehouse: str | None,
+    warehouses: list[str] | None,
     date_from: date,
     date_to: date,
 ) -> dict[str, Any]:
@@ -252,12 +252,12 @@ def get_series_v2(
             snapshot_dates_stmt = snapshot_dates_stmt.where(
                 FactSnapshot.company == company
             )
-        if warehouse:
+        if warehouses:
             delta_dates_stmt = delta_dates_stmt.where(
-                FactDeltaChange.warehouse == warehouse
+                FactDeltaChange.warehouse.in_(warehouses)
             )
             snapshot_dates_stmt = snapshot_dates_stmt.where(
-                FactSnapshot.warehouse == warehouse
+                FactSnapshot.warehouse.in_(warehouses)
             )
         availability_subq = delta_dates_stmt.union_all(snapshot_dates_stmt).subquery()
         availability_stmt = select(
@@ -325,9 +325,9 @@ def get_series_v2(
     if company:
         delta_stmt = delta_stmt.where(FactDeltaChange.company == company)
         snapshot_stmt = snapshot_stmt.where(FactSnapshot.company == company)
-    if warehouse:
-        delta_stmt = delta_stmt.where(FactDeltaChange.warehouse == warehouse)
-        snapshot_stmt = snapshot_stmt.where(FactSnapshot.warehouse == warehouse)
+    if warehouses:
+        delta_stmt = delta_stmt.where(FactDeltaChange.warehouse.in_(warehouses))
+        snapshot_stmt = snapshot_stmt.where(FactSnapshot.warehouse.in_(warehouses))
 
     delta_exists_stmt = (
         select(FactDeltaChange.data_date)
@@ -346,12 +346,12 @@ def get_series_v2(
         snapshot_exists_stmt = snapshot_exists_stmt.where(
             FactSnapshot.company == company
         )
-    if warehouse:
+    if warehouses:
         delta_exists_stmt = delta_exists_stmt.where(
-            FactDeltaChange.warehouse == warehouse
+            FactDeltaChange.warehouse.in_(warehouses)
         )
         snapshot_exists_stmt = snapshot_exists_stmt.where(
-            FactSnapshot.warehouse == warehouse
+            FactSnapshot.warehouse.in_(warehouses)
         )
     has_delta = session.execute(delta_exists_stmt.limit(1)).first()
     has_snapshot = session.execute(snapshot_exists_stmt.limit(1)).first()
@@ -414,8 +414,8 @@ def get_series_v2(
         )
         if company:
             rank_stmt = rank_stmt.where(FactDeltaChange.company == company)
-        if warehouse:
-            rank_stmt = rank_stmt.where(FactDeltaChange.warehouse == warehouse)
+        if warehouses:
+            rank_stmt = rank_stmt.where(FactDeltaChange.warehouse.in_(warehouses))
         rank_stmt = rank_stmt.group_by(FactDeltaChange.item_id).subquery()
         rank = session.execute(
             select(rank_stmt.c.rank).where(rank_stmt.c.item_id == item_id)

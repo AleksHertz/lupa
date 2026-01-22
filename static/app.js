@@ -115,7 +115,9 @@ function applyDatePreset(preset) {
 
 function getSelectedWarehouses() {
   if (!warehouseSelect) return [];
-  return Array.from(warehouseSelect.selectedOptions).map((option) => option.value);
+  return Array.from(warehouseSelect.selectedOptions)
+    .map((option) => option.value.trim())
+    .filter(Boolean);
 }
 
 function getTopLimit() {
@@ -151,14 +153,14 @@ function collectFilters() {
   const project = document.getElementById("filter-project")?.value || "";
   const dateFrom = document.getElementById("filter-date-from").value;
   const dateTo = document.getElementById("filter-date-to").value;
-  const warehouse = getSelectedWarehouses();
+  const warehouses = getSelectedWarehouses();
 
   return {
     sku,
     manufacturer,
     company,
     project,
-    warehouse,
+    warehouses,
     dateFrom,
     dateTo,
   };
@@ -346,13 +348,47 @@ async function loadWarehouseOptions() {
   });
 }
 
+function setAllWarehousesSelected(isSelected) {
+  if (!warehouseSelect) return;
+  Array.from(warehouseSelect.options).forEach((option) => {
+    option.selected = isSelected;
+  });
+}
+
+function initWarehouseActions() {
+  if (!warehouseSelect) return;
+  const parent = warehouseSelect.parentElement;
+  if (!parent || parent.dataset.actionsInitialized === "true") return;
+
+  const actions = document.createElement("div");
+  actions.className = "warehouse-actions";
+
+  const selectAllButton = document.createElement("button");
+  selectAllButton.type = "button";
+  selectAllButton.textContent = "Select all";
+  selectAllButton.addEventListener("click", () => {
+    setAllWarehousesSelected(true);
+  });
+
+  const clearButton = document.createElement("button");
+  clearButton.type = "button";
+  clearButton.textContent = "Clear";
+  clearButton.addEventListener("click", () => {
+    setAllWarehousesSelected(false);
+  });
+
+  actions.append(selectAllButton, clearButton);
+  warehouseSelect.insertAdjacentElement("afterend", actions);
+  parent.dataset.actionsInitialized = "true";
+}
+
 async function fetchSeriesWithParams({
   itemId,
   sku,
   manufacturer,
   company,
   project,
-  warehouse,
+  warehouses,
   dateFrom,
   dateTo,
 }) {
@@ -362,7 +398,7 @@ async function fetchSeriesWithParams({
   const params = new URLSearchParams();
   appendParam(params, "item_id", itemId);
   appendParam(params, "sku", sku);
-  appendParam(params, "warehouse", warehouse);
+  appendParam(params, "warehouses", warehouses);
   appendParam(params, "manufacturer", manufacturer);
   appendParam(params, "company", company);
   appendParam(params, "project", project);
@@ -378,7 +414,7 @@ async function fetchSeriesWithParams({
     manufacturer,
     company,
     project,
-    warehouse,
+    warehouses,
     dateFrom,
     dateTo,
   };
@@ -391,7 +427,7 @@ async function fetchSeries() {
     manufacturer,
     company,
     project,
-    warehouse,
+    warehouses,
     dateFrom,
     dateTo,
   } = collectFilters();
@@ -400,21 +436,25 @@ async function fetchSeries() {
     manufacturer,
     company,
     project,
-    warehouse,
+    warehouses,
     dateFrom,
     dateTo,
   });
 }
 
 async function fetchSeriesForItem(item) {
-  const { company, warehouse, dateFrom, dateTo } = collectFilters();
-  const selectedWarehouse = Array.isArray(warehouse) ? warehouse[0] : warehouse;
+  const { company, warehouses, dateFrom, dateTo } = collectFilters();
   const rowWarehouse =
     item?.warehouse && item.warehouse !== "ALL" ? item.warehouse : null;
+  const resolvedWarehouses = rowWarehouse
+    ? [rowWarehouse]
+    : warehouses.length > 0
+      ? warehouses
+      : null;
   await fetchSeriesWithParams({
     itemId: item?.item_id,
     company,
-    warehouse: rowWarehouse ?? selectedWarehouse,
+    warehouses: resolvedWarehouses,
     dateFrom,
     dateTo,
   });
@@ -452,7 +492,7 @@ async function fetchTop() {
     manufacturer,
     company,
     project,
-    warehouse,
+    warehouses,
     dateFrom,
     dateTo,
   } = collectFilters();
@@ -467,7 +507,7 @@ async function fetchTop() {
   appendParam(params, "manufacturer", manufacturer);
   appendParam(params, "company", company);
   appendParam(params, "project", project);
-  appendParam(params, "warehouse", warehouse);
+  appendParam(params, "warehouses", warehouses);
   appendParam(params, "date_from", dateFrom);
   appendParam(params, "date_to", dateTo);
   appendParam(params, "limit", limit);
@@ -520,3 +560,4 @@ companySwitcher?.addEventListener("change", () => {
 });
 
 loadWarehouseOptions();
+initWarehouseActions();

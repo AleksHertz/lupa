@@ -182,7 +182,7 @@ def upload_file(
 def series(
     item_id: int | None = Query(default=None),
     sku: str | None = Query(default=None),
-    warehouses: list[str] | None = Query(default=None, alias="warehouse"),
+    warehouses: list[str] | None = Query(default=None, alias="warehouses"),
     manufacturer: str | None = Query(default=None),
     project_label: str | None = Query(default=None),
     company: str | None = Query(default="alliance"),
@@ -218,12 +218,11 @@ def series(
                 status_code=400,
                 detail=f"No item found for sku or name: {sku}",
             )
-    warehouse = _normalize_blank(warehouses[0]) if warehouses else None
     return get_series_v2(
         session=session,
         item_id=item_id,
         company=company_norm,
-        warehouse=warehouse,
+        warehouses=warehouses,
         date_from=date_from,
         date_to=date_to,
     )
@@ -243,7 +242,7 @@ def filter_suggestions(
 def top_sales(
     limit: int = Query(100, ge=1, le=2000),
     company: str | None = Query(default="alliance"),
-    warehouses: list[str] | None = Query(default=None, alias="warehouse"),
+    warehouses: list[str] | None = Query(default=None, alias="warehouses"),
     sku: str | None = Query(default=None),
     manufacturer: str | None = Query(default=None),
     name: str | None = Query(default=None),
@@ -259,17 +258,6 @@ def top_sales(
         stripped = value.strip()
         return stripped or None
 
-    def _normalize_warehouses(values: list[str] | None) -> list[str] | None:
-        if not values:
-            return None
-        normalized: list[str] = []
-        for value in values:
-            if value is None:
-                continue
-            parts = [part.strip() for part in value.split(",")]
-            normalized.extend(part for part in parts if part)
-        return normalized or None
-
     def _parse_date(value: date | str | None, label: str) -> date | None:
         if value is None:
             return None
@@ -283,7 +271,7 @@ def top_sales(
                 detail=f"{label} must be in YYYY-MM-DD format",
             ) from exc
 
-    warehouses = _normalize_warehouses(warehouses)
+    warehouses = _normalize_csv_list(warehouses)
     sku = _normalize_blank(sku)
     manufacturer = _normalize_blank(manufacturer)
     project_label = _normalize_blank(project_label)

@@ -548,7 +548,7 @@ def get_top_sales(
         warehouse_column = FactDeltaChange.warehouse
         group_by_columns.append(FactDeltaChange.warehouse)
     else:
-        warehouse_column = func.min(FactDeltaChange.warehouse)
+        warehouse_column = literal("ALL")
 
     snapshot_group_columns = [FactSnapshot.item_id]
     snapshot_select_columns = [
@@ -608,7 +608,7 @@ def get_top_sales(
             sold_total_expr.label("sold_total"),
             replenished_total_expr.label("replenished_total"),
             func.max(snapshot_subq.c.last_price).label("last_price"),
-            func.row_number()
+            func.dense_rank()
             .over(order_by=sold_total_expr.desc())
             .label("rank"),
         )

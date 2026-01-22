@@ -1,4 +1,5 @@
 import logging
+import time
 import unicodedata
 from datetime import date, timedelta
 from typing import Literal
@@ -117,18 +118,52 @@ async def normalize_query_params(request: Request, call_next):
 async def log_requests(request: Request, call_next):
     origin = request.headers.get("origin")
     logger.info("Request URL: %s; Origin: %s", request.url, origin)
+    start_time = time.perf_counter()
     try:
         response = await call_next(request)
     except (anyio.EndOfStream, ClientDisconnect):
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(
+            "Request completed",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "querystring": request.url.query,
+                "status_code": 499,
+                "duration_ms": round(duration_ms, 2),
+            },
+        )
         logger.info("Client disconnected during request body read: %s", request.url)
         return JSONResponse(
             status_code=499,
             content={"detail": "Client disconnected"},
         )
     except Exception:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(
+            "Request completed",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "querystring": request.url.query,
+                "status_code": 500,
+                "duration_ms": round(duration_ms, 2),
+            },
+        )
         logger.exception("Unhandled exception for %s", request.url)
         raise
     status_code = response.status_code
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    logger.info(
+        "Request completed",
+        extra={
+            "method": request.method,
+            "path": request.url.path,
+            "querystring": request.url.query,
+            "status_code": status_code,
+            "duration_ms": round(duration_ms, 2),
+        },
+    )
     if status_code >= 500:
         logger.error("Response status %s for %s", status_code, request.url)
     elif status_code >= 400:
@@ -214,6 +249,16 @@ def series(
 
     warehouses = _normalize_csv_list(warehouses)
     company_norm = _normalize_company(_normalize_blank(company))
+    logger.info(
+        "Series params",
+        extra={
+            "company_norm": company_norm,
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+            "warehouses": warehouses,
+            "item_id": item_id,
+        },
+    )
     return get_series_v2(
         session=session,
         item_id=item_id,
@@ -286,6 +331,16 @@ def top_sales(
     if date_from is None and date_to is None:
         date_to = date.today()
         date_from = date_to - timedelta(days=30)
+    logger.info(
+        "Top params",
+        extra={
+            "company_norm": company_norm,
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
+            "warehouses": warehouses,
+            "sku": sku,
+        },
+    )
     return {
         "items": get_top_sales(
             session=session,

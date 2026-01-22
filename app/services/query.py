@@ -320,6 +320,15 @@ def get_series_v2(
         }
 
     if availability_range["min"] is None and availability_range["max"] is None:
+        logger.info(
+            "Series result summary",
+            extra={
+                "rows_count": 0,
+                "warehouses_count": 0,
+                "min_date": availability_range["min"],
+                "max_date": availability_range["max"],
+            },
+        )
         return _empty_series_response()
 
     calendar = (
@@ -414,6 +423,15 @@ def get_series_v2(
     has_snapshot = session.execute(snapshot_exists_stmt.limit(1)).first()
 
     if not has_delta and not has_snapshot:
+        logger.info(
+            "Series result summary",
+            extra={
+                "rows_count": 0,
+                "warehouses_count": 0,
+                "min_date": availability_range["min"],
+                "max_date": availability_range["max"],
+            },
+        )
         return _empty_series_response()
 
     delta_stmt = (
@@ -452,6 +470,16 @@ def get_series_v2(
         .order_by(warehouse_subq.c.warehouse, calendar.c.data_date)
     )
     rows = session.execute(stmt).mappings().all()
+    warehouses_seen = {row["warehouse"] for row in rows}
+    logger.info(
+        "Series result summary",
+        extra={
+            "rows_count": len(rows),
+            "warehouses_count": len(warehouses_seen),
+            "min_date": availability_range["min"],
+            "max_date": availability_range["max"],
+        },
+    )
     series: list[dict[str, Any]] = []
     sold_total = 0
     replenished_total = 0
@@ -678,6 +706,7 @@ def get_top_sales(
         stmt = stmt.where(FactDeltaChange.data_date <= date_to)
 
     rows = session.execute(stmt).mappings().all()
+    logger.info("Top sales result summary", extra={"rows_count": len(rows)})
     items = []
     required_keys = (
         "rank",

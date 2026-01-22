@@ -71,6 +71,25 @@ def _is_missing_schema_error(exc: Exception) -> bool:
     message = str(exc).lower()
     return "no such table" in message or "relation" in message and "does not exist" in message
 
+
+def _normalize_company(company: str | None, default: str | None = "alliance") -> str:
+    raw_value = (company or "").strip()
+    if not raw_value:
+        if default is None:
+            raise HTTPException(status_code=400, detail="Company is required")
+        raw_value = default
+    company_norm = raw_value.lower()
+    company_alias = unicodedata.normalize("NFKC", company_norm).casefold()
+    if company_alias in {"alliance", "альянс"}:
+        company_norm = "alliance"
+    allowed_companies = {"alliance", "vostok"}
+    if company_norm not in allowed_companies:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown company: {company}",
+        )
+    return company_norm
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -143,12 +162,13 @@ def upload_file(
             content={"detail": "Client disconnected"},
         )
     logger.info("Upload received: %s bytes for %s", len(file_bytes), file.filename)
+    company_norm = _normalize_company(company)
     try:
         payload = ingest_excel(
             session=session,
             upload_date=upload_date,
             file_bytes=file_bytes,
-            company=company,
+            company=company_norm,
             file_name=file.filename,
             mode=mode,
             dry_run=dry_run,
@@ -193,17 +213,7 @@ def series(
         return stripped or None
 
     warehouses = _normalize_csv_list(warehouses)
-    company_norm = _normalize_blank(company) or "alliance"
-    company_norm = company_norm.lower()
-    company_alias = unicodedata.normalize("NFKC", company_norm).casefold()
-    if company_alias in {"alliance", "альянс"}:
-        company_norm = "alliance"
-    allowed_companies = {"alliance", "vostok"}
-    if company_norm not in allowed_companies:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown company: {company}",
-        )
+    company_norm = _normalize_company(_normalize_blank(company))
     return get_series_v2(
         session=session,
         item_id=item_id,
@@ -221,7 +231,15 @@ def filter_suggestions(
     company: str | None = Query(default="alliance"),
     session: Session = Depends(get_session),
 ):
-    return {"items": get_suggestions(session=session, field=field, query=q, company=company)}
+    company_norm = _normalize_company(company)
+    return {
+        "items": get_suggestions(
+            session=session,
+            field=field,
+            query=q,
+            company=company_norm,
+        )
+    }
 
 
 @app.get("/top")
@@ -262,16 +280,7 @@ def top_sales(
     manufacturer = _normalize_blank(manufacturer)
     project_label = _normalize_blank(project_label)
     name = _normalize_blank(name)
-    company_norm = (company or "").strip().lower()
-    company_alias = unicodedata.normalize("NFKC", company_norm).casefold()
-    if company_alias in {"alliance", "альянс"}:
-        company_norm = "alliance"
-    allowed_companies = {"alliance", "vostok"}
-    if company_norm not in allowed_companies:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown company: {company}",
-        )
+    company_norm = _normalize_company(company)
     date_from = _parse_date(date_from, "date_from")
     date_to = _parse_date(date_to, "date_to")
     if date_from is None and date_to is None:
@@ -299,7 +308,7 @@ def availability(
     company: str | None = Query(default="alliance"),
     session: Session = Depends(get_session),
 ):
-    company_norm = company.strip().lower() if company else None
+    company_norm = _normalize_company(company)
     return get_availability(session=session, company=company_norm)
 
 
@@ -338,4 +347,5 @@ def ingest_state(
     limit: int = Query(30, ge=1, le=366),
     session: Session = Depends(get_session),
 ):
-    return get_ingest_state(session=session, company=company, limit=limit)
+    company_norm = _normalize_company(company, default=None)
+    return get_ingest_state(session=session, company=company_norm, limit=limit)

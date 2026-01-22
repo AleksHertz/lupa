@@ -1,7 +1,9 @@
 const uploadForm = document.getElementById("upload-form");
 const uploadStatus = document.getElementById("upload-status");
 const applyFilters = document.getElementById("apply-filters");
-const warehouseSelect = document.getElementById("filter-warehouse");
+const warehouseList = document.getElementById("filter-warehouse");
+const warehouseSelectAllButton = document.getElementById("warehouse-select-all");
+const warehouseClearButton = document.getElementById("warehouse-clear");
 const topTableBody = document.getElementById("top-table-body");
 const topLimitGroup = document.getElementById("top-limit");
 const topSearchInput = document.getElementById("top-search");
@@ -16,6 +18,7 @@ const fetchError = document.getElementById("fetch-error");
 
 const BASE_URL = window.BASE_URL ?? "";
 const buildUrl = (path) => `${BASE_URL}${path}`;
+const DEBUG = window.DEBUG === true;
 
 const kpiSold = document.getElementById("kpi-sold");
 const kpiReplenished = document.getElementById("kpi-replenished");
@@ -143,10 +146,15 @@ function applyDatePreset(preset) {
 }
 
 function getSelectedWarehouses() {
-  if (!warehouseSelect) return [];
-  return Array.from(warehouseSelect.selectedOptions)
+  if (!warehouseList) return [];
+  return Array.from(warehouseList.querySelectorAll('input[type="checkbox"]:checked'))
     .map((option) => option.value.trim())
     .filter(Boolean);
+}
+
+function logSelectedWarehouses() {
+  if (!DEBUG) return;
+  console.log("selectedWarehouses", getSelectedWarehouses());
 }
 
 function getTopLimit() {
@@ -746,61 +754,65 @@ uploadForm?.addEventListener("submit", async (event) => {
 });
 
 async function loadWarehouseOptions() {
-  if (!warehouseSelect) return;
+  if (!warehouseList) return;
   const params = new URLSearchParams();
   appendParam(params, "field", "warehouse");
   appendParam(params, "company", getSelectedCompany());
   const result = await safeFetch(buildUrl(`/filters/suggestions?${params.toString()}`));
   if (!result.ok) {
-    warehouseSelect.innerHTML = "";
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "Не удалось загрузить список складов";
-    option.disabled = true;
-    warehouseSelect.append(option);
+    warehouseList.innerHTML = "";
+    const message = document.createElement("div");
+    message.className = "warehouse-empty";
+    message.textContent = "Не удалось загрузить список складов";
+    warehouseList.append(message);
     return;
   }
-  warehouseSelect.innerHTML = "";
+  warehouseList.innerHTML = "";
   result.payload.items.forEach((item) => {
-    const option = document.createElement("option");
-    option.value = item;
-    option.textContent = item;
-    warehouseSelect.append(option);
+    const label = document.createElement("label");
+    label.className = "warehouse-option";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = item;
+    checkbox.addEventListener("change", () => {
+      label.classList.toggle("is-selected", checkbox.checked);
+      logSelectedWarehouses();
+    });
+
+    const text = document.createElement("span");
+    text.textContent = item;
+
+    label.append(checkbox, text);
+    warehouseList.append(label);
   });
 }
 
 function setAllWarehousesSelected(isSelected) {
-  if (!warehouseSelect) return;
-  Array.from(warehouseSelect.options).forEach((option) => {
-    option.selected = isSelected;
+  if (!warehouseList) return;
+  Array.from(warehouseList.querySelectorAll('input[type="checkbox"]')).forEach((checkbox) => {
+    checkbox.checked = isSelected;
+    const label = checkbox.closest(".warehouse-option");
+    if (label) {
+      label.classList.toggle("is-selected", isSelected);
+    }
   });
 }
 
 function initWarehouseActions() {
-  if (!warehouseSelect) return;
-  const parent = warehouseSelect.parentElement;
-  if (!parent || parent.dataset.actionsInitialized === "true") return;
-
-  const actions = document.createElement("div");
-  actions.className = "warehouse-actions";
-
-  const selectAllButton = document.createElement("button");
-  selectAllButton.type = "button";
-  selectAllButton.textContent = "Select all";
-  selectAllButton.addEventListener("click", () => {
-    setAllWarehousesSelected(true);
-  });
-
-  const clearButton = document.createElement("button");
-  clearButton.type = "button";
-  clearButton.textContent = "Clear";
-  clearButton.addEventListener("click", () => {
-    setAllWarehousesSelected(false);
-  });
-
-  actions.append(selectAllButton, clearButton);
-  warehouseSelect.insertAdjacentElement("afterend", actions);
-  parent.dataset.actionsInitialized = "true";
+  if (!warehouseList) return;
+  if (warehouseSelectAllButton) {
+    warehouseSelectAllButton.addEventListener("click", () => {
+      setAllWarehousesSelected(true);
+      logSelectedWarehouses();
+    });
+  }
+  if (warehouseClearButton) {
+    warehouseClearButton.addEventListener("click", () => {
+      setAllWarehousesSelected(false);
+      logSelectedWarehouses();
+    });
+  }
 }
 
 async function fetchSeriesWithParams({

@@ -72,7 +72,11 @@
         </label>
         <label>
           Склады
-          <select id="filter-warehouse" multiple size="4"></select>
+          <div class="warehouse-actions">
+            <button type="button" id="warehouse-select-all">Выбрать все</button>
+            <button type="button" id="warehouse-clear">Снять все</button>
+          </div>
+          <div id="filter-warehouse" class="warehouse-list"></div>
           <span class="hint">Если не выбран склад — показываем все.</span>
         </label>
         <label>

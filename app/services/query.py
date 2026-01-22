@@ -578,14 +578,10 @@ def get_top_sales(
         Item.id,
         Item.canonical_sku,
         Item.name,
-        Item.manufacturer_norm,
-        Item.brand,
+        Item.group_name,
     ]
     if group_by_warehouse:
-        warehouse_column = FactDeltaChange.warehouse
         group_by_columns.append(FactDeltaChange.warehouse)
-    else:
-        warehouse_column = literal("ALL")
 
     snapshot_group_columns = [FactSnapshot.item_id]
     snapshot_select_columns = [
@@ -631,6 +627,11 @@ def get_top_sales(
         join_condition = join_condition & (
             FactDeltaChange.warehouse == snapshot_subq.c.warehouse
         )
+        warehouse_column = func.coalesce(
+            snapshot_subq.c.warehouse, FactDeltaChange.warehouse
+        )
+    else:
+        warehouse_column = func.min(FactDeltaChange.warehouse)
 
     sold_total_expr = func.sum(FactDeltaChange.sold_qty)
     replenished_total_expr = func.sum(FactDeltaChange.replenished_qty)
@@ -639,8 +640,7 @@ def get_top_sales(
             Item.id.label("item_id"),
             Item.canonical_sku.label("canonical_sku"),
             Item.name,
-            Item.manufacturer_norm.label("manufacturer"),
-            Item.brand,
+            Item.group_name.label("group_name"),
             warehouse_column.label("warehouse"),
             sold_total_expr.label("sold_total"),
             replenished_total_expr.label("replenished_total"),
@@ -683,10 +683,12 @@ def get_top_sales(
         "rank",
         "item_id",
         "canonical_sku",
+        "name",
+        "group_name",
+        "warehouse",
         "sold_total",
         "replenished_total",
         "last_price",
-        "warehouse",
     )
     for row in rows:
         data = dict(row)

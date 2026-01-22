@@ -607,7 +607,22 @@ def get_top_sales(
         stmt = stmt.where(FactDeltaChange.data_date <= date_to)
 
     rows = session.execute(stmt).mappings().all()
-    return [dict(row) for row in rows]
+    items = []
+    required_keys = (
+        "rank",
+        "item_id",
+        "canonical_sku",
+        "sold_total",
+        "replenished_total",
+        "last_price",
+        "warehouse",
+    )
+    for row in rows:
+        data = dict(row)
+        for key in required_keys:
+            data.setdefault(key, None)
+        items.append(data)
+    return items
 
 
 def get_ingest_state(

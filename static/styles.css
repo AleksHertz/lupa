@@ -169,6 +169,29 @@ button:hover {
   overflow: auto;
 }
 
+.top-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+}
+
+.top-controls .inline {
+  align-items: center;
+  gap: 8px;
+}
+
+.top-controls input[type="search"],
+.top-controls input[type="number"] {
+  min-width: 180px;
+}
+
+.top-nav {
+  display: flex;
+  gap: 8px;
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
@@ -197,6 +220,19 @@ button:hover {
 
 .data-table tbody tr:hover {
   background: #f8fafc;
+}
+
+.data-table tbody tr.is-selected {
+  background: #e0f2fe;
+}
+
+.cell-ellipsis {
+  display: inline-block;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 
 .kpi-grid {

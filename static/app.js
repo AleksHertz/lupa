@@ -4,6 +4,11 @@ const applyFilters = document.getElementById("apply-filters");
 const warehouseSelect = document.getElementById("filter-warehouse");
 const topTableBody = document.getElementById("top-table-body");
 const topLimitGroup = document.getElementById("top-limit");
+const topSearchInput = document.getElementById("top-search");
+const topPrevButton = document.getElementById("top-prev");
+const topNextButton = document.getElementById("top-next");
+const topJumpInput = document.getElementById("top-jump-rank");
+const topJumpButton = document.getElementById("top-jump-btn");
 const datePreset = document.getElementById("filter-date-preset");
 const stockToggle = document.getElementById("toggle-stock");
 const companySwitcher = document.getElementById("company-switcher");
@@ -18,6 +23,11 @@ const kpiMaxSold = document.getElementById("kpi-max-sold");
 const kpiMaxRepl = document.getElementById("kpi-max-repl");
 
 let lastSeriesParams = null;
+let topItems = [];
+let filteredTopItems = [];
+let selectedTopKey = null;
+let selectedTopIndex = -1;
+let warehouseCounts = new Map();
 
 function setStatus(message, isError = false) {
   uploadStatus.textContent = message;
@@ -174,6 +184,134 @@ function formatNumber(value) {
     return value.toLocaleString("ru-RU");
   }
   return `${value}`;
+}
+
+function escapeHtml(value) {
+  return `${value}`
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function normalizeText(value) {
+  if (value === null || value === undefined) return "";
+  return `${value}`.normalize("NFKC").toLowerCase();
+}
+
+function getItemKey(item) {
+  const itemId = item?.item_id ?? "unknown";
+  const warehouse = item?.warehouse ?? "ALL";
+  return `${itemId}::${warehouse}`;
+}
+
+function buildWarehouseCounts(items) {
+  const counts = new Map();
+  items.forEach((item) => {
+    if (!item?.item_id) return;
+    const warehouse = item?.warehouse ?? "ALL";
+    const entry = counts.get(item.item_id) ?? new Set();
+    entry.add(warehouse);
+    counts.set(item.item_id, entry);
+  });
+  return counts;
+}
+
+function hasMultipleWarehouses(item) {
+  if (!item?.item_id) return false;
+  return (warehouseCounts.get(item.item_id)?.size ?? 0) > 1;
+}
+
+function getWarehouseLabel(item) {
+  if (hasMultipleWarehouses(item)) return "ALL";
+  return item?.warehouse ?? "ALL";
+}
+
+function updateSelectionIndex() {
+  if (!selectedTopKey) {
+    selectedTopIndex = -1;
+    return;
+  }
+  selectedTopIndex = filteredTopItems.findIndex(
+    (item) => getItemKey(item) === selectedTopKey
+  );
+}
+
+function updateNavButtons() {
+  if (!topPrevButton || !topNextButton) return;
+  if (filteredTopItems.length === 0) {
+    topPrevButton.disabled = true;
+    topNextButton.disabled = true;
+    return;
+  }
+  topPrevButton.disabled = selectedTopIndex <= 0;
+  topNextButton.disabled =
+    selectedTopIndex < 0 || selectedTopIndex >= filteredTopItems.length - 1;
+}
+
+function scrollToSelectedRow() {
+  if (!topTableBody || !selectedTopKey) return;
+  const selector = `tr[data-key="${window.CSS?.escape
+    ? window.CSS.escape(selectedTopKey)
+    : selectedTopKey.replaceAll('"', '\\"')}"]`;
+  const row = topTableBody.querySelector(selector);
+  if (row) {
+    row.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function applyTopFilter() {
+  const query = normalizeText(topSearchInput?.value || "");
+  if (!query) {
+    filteredTopItems = [...topItems];
+  } else {
+    filteredTopItems = topItems.filter((item) => {
+      const sku = normalizeText(item?.canonical_sku || item?.sku || "");
+      const name = normalizeText(item?.name || "");
+      return sku.includes(query) || name.includes(query);
+    });
+  }
+  updateSelectionIndex();
+  renderTopTable(filteredTopItems);
+  if (selectedTopIndex >= 0) {
+    scrollToSelectedRow();
+  }
+  updateNavButtons();
+}
+
+function setSelectedItem(item, options = {}) {
+  if (!item) return;
+  selectedTopKey = getItemKey(item);
+  updateSelectionIndex();
+  renderTopTable(filteredTopItems);
+  if (options.scroll !== false) {
+    scrollToSelectedRow();
+  }
+  if (options.fetch !== false) {
+    fetchSeriesForItem(item);
+  }
+  updateNavButtons();
+}
+
+function moveSelection(offset) {
+  if (filteredTopItems.length === 0) return;
+  if (selectedTopIndex < 0) {
+    const index = offset > 0 ? 0 : filteredTopItems.length - 1;
+    setSelectedItem(filteredTopItems[index]);
+    return;
+  }
+  const nextIndex = selectedTopIndex + offset;
+  if (nextIndex < 0 || nextIndex >= filteredTopItems.length) return;
+  setSelectedItem(filteredTopItems[nextIndex]);
+}
+
+function jumpToRank(rankValue) {
+  const rank = Number.parseInt(rankValue, 10);
+  if (!Number.isFinite(rank)) return;
+  const target = filteredTopItems.find((item) => Number(item.rank) === rank);
+  if (!target) return;
+  setSelectedItem(target);
 }
 
 function setSeriesEmptyState(availableRange, onShowAvailable) {
@@ -445,7 +583,9 @@ async function fetchSeries() {
 async function fetchSeriesForItem(item) {
   const { company, warehouses, dateFrom, dateTo } = collectFilters();
   const rowWarehouse =
-    item?.warehouse && item.warehouse !== "ALL" ? item.warehouse : null;
+    item?.warehouse && item.warehouse !== "ALL" && !hasMultipleWarehouses(item)
+      ? item.warehouse
+      : null;
   const resolvedWarehouses = rowWarehouse
     ? [rowWarehouse]
     : warehouses.length > 0
@@ -464,27 +604,36 @@ function renderTopTable(items) {
   if (!topTableBody) return;
   topTableBody.innerHTML = "";
   items.forEach((item) => {
+    const key = getItemKey(item);
     const row = document.createElement("tr");
+    row.dataset.key = key;
     if (item.item_id) {
       row.dataset.itemId = item.item_id;
     }
+    if (key === selectedTopKey) {
+      row.classList.add("is-selected");
+    }
+    const nameValue = item.name ?? "—";
+    const nameLabel = escapeHtml(nameValue);
     row.innerHTML = `
       <td>${item.rank ?? "—"}</td>
-      <td>${item.sku ?? "—"}</td>
-      <td>${item.name ?? "—"}</td>
-      <td>${item.manufacturer ?? "—"}</td>
-      <td>${item.brand ?? "—"}</td>
-      <td>${item.warehouse ?? "ALL"}</td>
-      <td>${item.sold_qty ?? "—"}</td>
-      <td>${item.replenished_qty ?? "—"}</td>
-      <td>${item.last_price ?? "—"}</td>
+      <td>${escapeHtml(item.canonical_sku ?? "—")}</td>
+      <td>
+        <span class="cell-ellipsis" title="${nameLabel}">
+          ${nameLabel}
+        </span>
+      </td>
+      <td>${getWarehouseLabel(item)}</td>
+      <td>${formatNumber(item.sold_total)}</td>
+      <td>${formatNumber(item.replenished_total)}</td>
+      <td>${formatNumber(item.last_price)}</td>
     `;
     row.addEventListener("click", () => {
-      row.scrollIntoView({ block: "nearest" });
-      fetchSeriesForItem(item);
+      setSelectedItem(item);
     });
     topTableBody.append(row);
   });
+  updateNavButtons();
 }
 
 async function fetchTop() {
@@ -533,7 +682,12 @@ async function fetchTop() {
     return;
   }
   const items = Array.isArray(result.payload) ? result.payload : result.payload.items || [];
-  renderTopTable(items);
+  topItems = items;
+  warehouseCounts = buildWarehouseCounts(items);
+  applyTopFilter();
+  if (selectedTopIndex >= 0) {
+    fetchSeriesForItem(filteredTopItems[selectedTopIndex]);
+  }
 }
 
 applyFilters?.addEventListener("click", (event) => {
@@ -548,6 +702,28 @@ datePreset?.addEventListener("change", (event) => {
 
 topLimitGroup?.addEventListener("change", () => {
   fetchTop();
+});
+
+topSearchInput?.addEventListener("input", () => {
+  applyTopFilter();
+});
+
+topPrevButton?.addEventListener("click", () => {
+  moveSelection(-1);
+});
+
+topNextButton?.addEventListener("click", () => {
+  moveSelection(1);
+});
+
+topJumpButton?.addEventListener("click", () => {
+  jumpToRank(topJumpInput?.value || "");
+});
+
+topJumpInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    jumpToRank(topJumpInput?.value || "");
+  }
 });
 
 stockToggle?.addEventListener("change", () => {

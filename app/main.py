@@ -45,6 +45,13 @@ def _normalize_csv_list(values: list[str] | None) -> list[str] | None:
     return expanded or None
 
 
+def _normalize_blank(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
 def _normalize_query_string(query_string: bytes) -> bytes:
     if not query_string:
         return query_string
@@ -241,12 +248,6 @@ def series(
     date_to: date = Query(...),
     session: Session = Depends(get_session),
 ):
-    def _normalize_blank(value: str | None) -> str | None:
-        if value is None:
-            return None
-        stripped = value.strip()
-        return stripped or None
-
     warehouses = _normalize_csv_list(warehouses)
     company_norm = _normalize_company(_normalize_blank(company))
     logger.info(
@@ -276,7 +277,7 @@ def filter_suggestions(
     company: str | None = Query(default="alliance"),
     session: Session = Depends(get_session),
 ):
-    company_norm = _normalize_company(company)
+    company_norm = _normalize_company(_normalize_blank(company))
     return {
         "items": get_suggestions(
             session=session,
@@ -301,17 +302,13 @@ def top_sales(
     date_to: date | None = Query(default=None),
     session: Session = Depends(get_session),
 ):
-    def _normalize_blank(value: str | None) -> str | None:
-        if value is None:
-            return None
-        stripped = value.strip()
-        return stripped or None
-
     def _parse_date(value: date | str | None, label: str) -> date | None:
         if value is None:
             return None
         if isinstance(value, date):
             return value
+        if not value.strip():
+            return None
         try:
             return date.fromisoformat(value)
         except ValueError as exc:
@@ -325,7 +322,7 @@ def top_sales(
     manufacturer = _normalize_blank(manufacturer)
     project_label = _normalize_blank(project_label)
     name = _normalize_blank(name)
-    company_norm = _normalize_company(company)
+    company_norm = _normalize_company(_normalize_blank(company))
     date_from = _parse_date(date_from, "date_from")
     date_to = _parse_date(date_to, "date_to")
     if date_from is None and date_to is None:
@@ -363,7 +360,7 @@ def availability(
     company: str | None = Query(default="alliance"),
     session: Session = Depends(get_session),
 ):
-    company_norm = _normalize_company(company)
+    company_norm = _normalize_company(_normalize_blank(company))
     return get_availability(session=session, company=company_norm)
 
 
@@ -402,5 +399,5 @@ def ingest_state(
     limit: int = Query(30, ge=1, le=366),
     session: Session = Depends(get_session),
 ):
-    company_norm = _normalize_company(company, default=None)
+    company_norm = _normalize_company(_normalize_blank(company), default=None)
     return get_ingest_state(session=session, company=company_norm, limit=limit)

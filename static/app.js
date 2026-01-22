@@ -23,6 +23,7 @@ const kpiMaxSold = document.getElementById("kpi-max-sold");
 const kpiMaxRepl = document.getElementById("kpi-max-repl");
 
 let lastSeriesParams = null;
+let lastSeriesPayload = null;
 let topItems = [];
 let filteredTopItems = [];
 let selectedTopKey = null;
@@ -181,7 +182,21 @@ function formatNumber(value) {
     return "—";
   }
   if (typeof value === "number") {
-    return value.toLocaleString("ru-RU");
+    return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(value);
+  }
+  return `${value}`;
+}
+
+function formatCurrency(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "—";
+  }
+  if (typeof value === "number") {
+    return new Intl.NumberFormat("ru-RU", {
+      style: "currency",
+      currency: "RUB",
+      maximumFractionDigits: 2,
+    }).format(value);
   }
   return `${value}`;
 }
@@ -344,9 +359,151 @@ function setSeriesEmptyState(availableRange, onShowAvailable) {
   chartEl.append(wrapper);
 }
 
+function ensureDetailedToggle() {
+  const existing = document.getElementById("toggle-detailed");
+  if (existing) return existing;
+
+  const filters = document.querySelector(".filters");
+  if (!filters) return null;
+
+  const label = document.createElement("label");
+  label.className = "inline";
+
+  const span = document.createElement("span");
+  span.textContent = "Detailed by warehouse";
+
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.id = "toggle-detailed";
+
+  label.append(span, checkbox);
+
+  const stockLabel = document.querySelector('label.inline input#toggle-stock')?.parentElement;
+  if (stockLabel) {
+    stockLabel.insertAdjacentElement("afterend", label);
+  } else {
+    filters.append(label);
+  }
+
+  checkbox.addEventListener("change", () => {
+    if (lastSeriesPayload) {
+      renderSeries(lastSeriesPayload);
+    }
+  });
+
+  return checkbox;
+}
+
+function buildSeriesByWarehouse(series) {
+  const byWarehouse = new Map();
+  const datesSet = new Set();
+
+  series.forEach((entry) => {
+    if (!entry?.date) return;
+    const warehouse = entry.warehouse ?? "ALL";
+    const date = entry.date;
+    datesSet.add(date);
+
+    const warehouseMap = byWarehouse.get(warehouse) ?? new Map();
+    const existing = warehouseMap.get(date) ?? {
+      sold: 0,
+      replenished: 0,
+      stock: null,
+      price: null,
+    };
+
+    existing.sold += entry.sold ?? 0;
+    existing.replenished += entry.replenished ?? 0;
+    if (entry.stock !== null && entry.stock !== undefined) {
+      existing.stock = entry.stock;
+    }
+    if (entry.price !== null && entry.price !== undefined) {
+      existing.price = entry.price;
+    }
+
+    warehouseMap.set(date, existing);
+    byWarehouse.set(warehouse, warehouseMap);
+  });
+
+  const dates = Array.from(datesSet).sort();
+  return { dates, byWarehouse };
+}
+
+function buildWarehouseTimeline(warehouseMap, dates) {
+  const sold = [];
+  const replenished = [];
+  const stock = [];
+  const price = [];
+  let lastStock = null;
+  let lastPrice = null;
+
+  dates.forEach((date) => {
+    const entry = warehouseMap.get(date);
+    const soldValue = entry?.sold ?? 0;
+    const replValue = entry?.replenished ?? 0;
+    const stockValue = entry?.stock ?? null;
+    const priceValue = entry?.price ?? null;
+
+    if (stockValue !== null) {
+      lastStock = stockValue;
+    }
+    if (priceValue !== null) {
+      lastPrice = priceValue;
+    }
+
+    sold.push(soldValue);
+    replenished.push(replValue);
+    stock.push(stockValue !== null ? stockValue : lastStock);
+    price.push(priceValue !== null ? priceValue : lastPrice);
+  });
+
+  return { sold, replenished, stock, price };
+}
+
+function buildHoverCustomData({ dates, warehouse, stock, sold, replenished, price }) {
+  return dates.map((date, index) => [
+    warehouse ?? "ALL",
+    formatNumber(stock[index]),
+    formatNumber(sold[index]),
+    formatNumber(replenished[index]),
+    formatCurrency(price[index]),
+    date,
+  ]);
+}
+
+function buildHoverTemplate() {
+  return (
+    "Дата: %{customdata[5]}<br>" +
+    "Склад: %{customdata[0]}<br>" +
+    "Остаток: %{customdata[1]}<br>" +
+    "Продано: %{customdata[2]}<br>" +
+    "Пополнено: %{customdata[3]}<br>" +
+    "Цена: %{customdata[4]}<extra></extra>"
+  );
+}
+
+function createWarehouseColors(count) {
+  const base = [
+    "#2563eb",
+    "#16a34a",
+    "#0ea5e9",
+    "#f97316",
+    "#7c3aed",
+    "#db2777",
+    "#facc15",
+  ];
+  const colors = [];
+  for (let index = 0; index < count; index += 1) {
+    colors.push(base[index % base.length]);
+  }
+  return colors;
+}
+
 function renderSeries(payload) {
   const summary = payload?.summary || {};
   const series = Array.isArray(payload?.series) ? payload.series : [];
+  lastSeriesPayload = payload;
+  const detailedToggle = ensureDetailedToggle();
 
   kpiSold.textContent = formatNumber(summary.sold_total);
   kpiReplenished.textContent = formatNumber(summary.replenished_total);
@@ -370,59 +527,165 @@ function renderSeries(payload) {
     return;
   }
 
-  const dates = series.map((entry) => entry.date);
-  const soldValues = series.map((entry) => entry.sold ?? 0);
-  const replenishedValues = series.map((entry) => entry.replenished ?? 0);
-  const stockValues = series.map((entry) => entry.stock ?? null);
-  const priceValues = series.map((entry) => entry.price ?? null);
+  const { dates, byWarehouse } = buildSeriesByWarehouse(series);
+  const warehouses = Array.from(byWarehouse.keys());
+  const hasMultipleWarehouses = warehouses.length > 1;
+  const showDetailed = Boolean(detailedToggle?.checked && hasMultipleWarehouses);
+  const hoverTemplate = buildHoverTemplate();
+  const traces = [];
+  const colors = createWarehouseColors(warehouses.length);
 
-  const soldTrace = {
-    x: dates,
-    y: soldValues,
-    name: "Продано",
-    type: "bar",
-    marker: { color: "#2563eb" },
+  const aggregated = {
+    sold: Array(dates.length).fill(0),
+    replenished: Array(dates.length).fill(0),
+    stock: Array(dates.length).fill(0),
+    price: Array(dates.length).fill(null),
   };
+  const aggregatedPriceSum = Array(dates.length).fill(0);
+  const aggregatedPriceCount = Array(dates.length).fill(0);
 
-  const replTrace = {
-    x: dates,
-    y: replenishedValues,
-    name: "Пополнено",
-    type: "bar",
-    marker: { color: "#16a34a" },
-  };
-
-  const traces = [soldTrace, replTrace];
-
-  if (stockToggle?.checked && stockValues.some((value) => value !== null)) {
-    traces.push({
-      x: dates,
-      y: stockValues,
-      name: "Остаток",
-      yaxis: "y2",
-      type: "scatter",
-      mode: "lines",
-      line: { color: "#0ea5e9", width: 2 },
+  warehouses.forEach((warehouse, index) => {
+    const warehouseMap = byWarehouse.get(warehouse) ?? new Map();
+    const timeline = buildWarehouseTimeline(warehouseMap, dates);
+    const customData = buildHoverCustomData({
+      dates,
+      warehouse,
+      stock: timeline.stock,
+      sold: timeline.sold,
+      replenished: timeline.replenished,
+      price: timeline.price,
     });
-  }
 
-  if (priceValues.some((value) => value !== null)) {
+    for (let i = 0; i < dates.length; i += 1) {
+      aggregated.sold[i] += timeline.sold[i];
+      aggregated.replenished[i] += timeline.replenished[i];
+      if (timeline.stock[i] !== null && timeline.stock[i] !== undefined) {
+        aggregated.stock[i] += timeline.stock[i];
+      }
+      if (timeline.price[i] !== null && timeline.price[i] !== undefined) {
+        aggregatedPriceSum[i] += timeline.price[i];
+        aggregatedPriceCount[i] += 1;
+      }
+    }
+
+    if (stockToggle?.checked && timeline.stock.some((value) => value !== null)) {
+      traces.push({
+        x: dates,
+        y: timeline.stock,
+        name: hasMultipleWarehouses ? `Остаток — ${warehouse}` : "Остаток",
+        yaxis: "y",
+        type: "scatter",
+        mode: "lines",
+        connectgaps: true,
+        line: { color: colors[index], width: 2 },
+        customdata: customData,
+        hovertemplate: hoverTemplate,
+      });
+    }
+
+    if (timeline.price.some((value) => value !== null)) {
+      const changeMarkers = timeline.price.map((value, i) => {
+        if (value === null || value === undefined) return null;
+        if (i === 0) return value;
+        const prev = timeline.price[i - 1];
+        return prev !== value ? value : null;
+      });
+
+      traces.push({
+        x: dates,
+        y: timeline.price,
+        name: hasMultipleWarehouses ? `Цена — ${warehouse}` : "Цена",
+        yaxis: "y3",
+        type: "scatter",
+        mode: "lines",
+        connectgaps: true,
+        line: { color: "#f97316", width: 1 },
+        customdata: customData,
+        hovertemplate: hoverTemplate,
+        showlegend: !hasMultipleWarehouses,
+      });
+
+      traces.push({
+        x: dates,
+        y: changeMarkers,
+        name: hasMultipleWarehouses ? `Изменение цены — ${warehouse}` : "Изменение цены",
+        yaxis: "y3",
+        type: "scatter",
+        mode: "markers",
+        marker: { color: "#f97316", size: 6, symbol: "circle" },
+        customdata: customData,
+        hovertemplate: hoverTemplate,
+        showlegend: false,
+      });
+    }
+
+    if (showDetailed) {
+      traces.push({
+        x: dates,
+        y: timeline.sold,
+        name: `Продано — ${warehouse}`,
+        type: "bar",
+        yaxis: "y2",
+        marker: { color: colors[index] },
+        customdata: customData,
+        hovertemplate: hoverTemplate,
+      });
+
+      traces.push({
+        x: dates,
+        y: timeline.replenished,
+        name: `Пополнено — ${warehouse}`,
+        type: "bar",
+        yaxis: "y2",
+        marker: { color: colors[index], opacity: 0.45 },
+        customdata: customData,
+        hovertemplate: hoverTemplate,
+      });
+    }
+  });
+
+  if (!showDetailed) {
+    aggregated.price = aggregatedPriceSum.map((sum, index) =>
+      aggregatedPriceCount[index] > 0 ? sum / aggregatedPriceCount[index] : null
+    );
+    const aggregateWarehouse = hasMultipleWarehouses ? "ALL" : warehouses[0] ?? "ALL";
+    const customData = buildHoverCustomData({
+      dates,
+      warehouse: aggregateWarehouse,
+      stock: aggregated.stock,
+      sold: aggregated.sold,
+      replenished: aggregated.replenished,
+      price: aggregated.price,
+    });
+
     traces.push({
       x: dates,
-      y: priceValues,
-      name: "Цена",
-      yaxis: "y3",
-      type: "scatter",
-      mode: "lines+markers",
-      line: { color: "#f97316" },
+      y: aggregated.sold,
+      name: "Продано",
+      type: "bar",
+      yaxis: "y2",
+      marker: { color: "#2563eb" },
+      customdata: customData,
+      hovertemplate: hoverTemplate,
+    });
+
+    traces.push({
+      x: dates,
+      y: aggregated.replenished,
+      name: "Пополнено",
+      type: "bar",
+      yaxis: "y2",
+      marker: { color: "#16a34a" },
+      customdata: customData,
+      hovertemplate: hoverTemplate,
     });
   }
 
   const layout = {
     barmode: "group",
-    yaxis: { title: "Кол-во" },
+    yaxis: { title: "Остаток" },
     yaxis2: {
-      title: "Остаток",
+      title: "Продажи/пополнения",
       overlaying: "y",
       side: "right",
     },
@@ -626,7 +889,7 @@ function renderTopTable(items) {
       <td>${getWarehouseLabel(item)}</td>
       <td>${formatNumber(item.sold_total)}</td>
       <td>${formatNumber(item.replenished_total)}</td>
-      <td>${formatNumber(item.last_price)}</td>
+      <td>${formatCurrency(item.last_price)}</td>
     `;
     row.addEventListener("click", () => {
       setSelectedItem(item);
@@ -727,7 +990,11 @@ topJumpInput?.addEventListener("keydown", (event) => {
 });
 
 stockToggle?.addEventListener("change", () => {
-  fetchSeries();
+  if (lastSeriesPayload) {
+    renderSeries(lastSeriesPayload);
+  } else {
+    fetchSeries();
+  }
 });
 
 companySwitcher?.addEventListener("change", () => {
@@ -738,3 +1005,4 @@ companySwitcher?.addEventListener("change", () => {
 
 loadWarehouseOptions();
 initWarehouseActions();
+ensureDetailedToggle();

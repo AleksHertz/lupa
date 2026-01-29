@@ -12,9 +12,13 @@ body {
   max-width: 1200px;
   margin: 0 auto;
   padding: 32px;
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
+  display: block;
+}
+
+.container > header,
+.container > section {
+  width: 100%;
+  margin-bottom: 24px;
 }
 
 header h1 {
@@ -41,6 +45,8 @@ header h1 {
   padding: 20px 24px;
   border-radius: 12px;
   box-shadow: 0 6px 20px rgba(16, 24, 40, 0.08);
+  width: 100%;
+  box-sizing: border-box;
 }
 
 form,
@@ -102,9 +108,24 @@ button:hover {
   white-space: pre-wrap;
 }
 
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 240px;
+  padding: 24px;
+  text-align: center;
+  color: #475467;
+  font-size: 14px;
+}
+
+.empty-state button {
+  margin-top: 12px;
+}
+
 .chart {
   width: 100%;
-  min-height: 520px;
+  min-height: 420px;
 }
 
 .hint {

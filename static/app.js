@@ -27,12 +27,14 @@ const detailWarehouses = document.getElementById("detail-warehouses");
 
 const BASE_URL = window.BASE_URL ?? "";
 const buildUrl = (path) => `${BASE_URL}${path}`;
+const ALL_WAREHOUSES_LABEL = "ВСЕ";
 const kpiSold = document.getElementById("kpi-sold");
 const kpiReplenished = document.getElementById("kpi-replenished");
 const kpiRank = document.getElementById("kpi-rank");
 const kpiStock = document.getElementById("kpi-stock");
 const kpiPrice = document.getElementById("kpi-price");
 const kpiWarehouses = document.getElementById("kpi-warehouses");
+const kpiLatestDate = document.getElementById("kpi-latest-date");
 
 let lastSeriesParams = null;
 let lastSeriesPayload = null;
@@ -251,21 +253,24 @@ function formatCurrency(value) {
 
 function updateLatestLoadedBadge(latestDate) {
   if (!latestLoadedBadge) return;
-  latestLoadedBadge.textContent = `Latest loaded date: ${latestDate || "—"}`;
+  latestLoadedBadge.textContent = `Последняя загруженная дата: ${latestDate || "—"}`;
+  if (kpiLatestDate) {
+    kpiLatestDate.textContent = latestDate || "—";
+  }
 }
 
 function updateChartDetails({ item, warehousesLabel }) {
   if (detailSku) {
-    detailSku.textContent = `SKU: ${item?.canonical_sku ?? "—"}`;
+    detailSku.textContent = `Артикул: ${item?.canonical_sku ?? "—"}`;
   }
   if (detailName) {
-    detailName.textContent = `Name: ${item?.name ?? "—"}`;
+    detailName.textContent = `Наименование: ${item?.name ?? "—"}`;
   }
   if (detailManufacturer) {
-    detailManufacturer.textContent = `Manufacturer: ${item?.manufacturer ?? "—"}`;
+    detailManufacturer.textContent = `Производитель: ${item?.manufacturer ?? "—"}`;
   }
   if (detailWarehouses) {
-    detailWarehouses.textContent = `Warehouses: ${warehousesLabel || "—"}`;
+    detailWarehouses.textContent = `Склады: ${warehousesLabel || "—"}`;
   }
 }
 
@@ -279,7 +284,7 @@ function updatePaginationControls(totalCount) {
     topPageNumberInput.max = `${topTotalPages}`;
   }
   if (topPageTotal) {
-    topPageTotal.textContent = `of ${topTotalPages}`;
+    topPageTotal.textContent = `из ${topTotalPages}`;
   }
   if (topPagePrevButton) {
     topPagePrevButton.disabled = topPage <= 1;
@@ -319,8 +324,8 @@ function getItemKey(item) {
 }
 
 function getWarehouseLabel(item) {
-  if (!topGroupByWarehouse) return "ALL";
-  return item?.warehouse ?? "ALL";
+  if (!topGroupByWarehouse) return ALL_WAREHOUSES_LABEL;
+  return item?.warehouse ?? ALL_WAREHOUSES_LABEL;
 }
 
 function updateSelectionIndex() {
@@ -365,10 +370,12 @@ function applyTopFilter() {
 function setSelectedItem(item, options = {}) {
   if (!item) return;
   if (DEBUG) {
-    const { warehouses, dateFrom, dateTo } = collectFilters();
+    const { warehouses, dateFrom, dateTo, company } = collectFilters();
     console.log("selectedRow", {
       itemId: item?.item_id,
       sku: item?.canonical_sku ?? item?.sku,
+      rank: item?.rank,
+      company,
       warehouses,
       dateFrom,
       dateTo,
@@ -408,7 +415,7 @@ function setSeriesEmptyState(availableRange, onShowAvailable) {
   if (availableRange?.min && availableRange?.max) {
     const button = document.createElement("button");
     button.type = "button";
-    button.textContent = "Поставить доступный диапазон";
+    button.textContent = "Показать доступный период";
     button.addEventListener("click", () => {
       onShowAvailable?.(availableRange.min, availableRange.max);
     });
@@ -418,13 +425,37 @@ function setSeriesEmptyState(availableRange, onShowAvailable) {
   chartEl.append(wrapper);
 }
 
+function setChartLoadingState() {
+  const chartEl = document.getElementById("chart");
+  if (!chartEl) return;
+  Plotly.purge(chartEl);
+  chartEl.innerHTML = "<div class=\"empty-state\"><p>Загрузка графика…</p></div>";
+}
+
+function setChartErrorState({ status, body }) {
+  const chartEl = document.getElementById("chart");
+  if (!chartEl) return;
+  Plotly.purge(chartEl);
+  const statusLabel = status ?? "—";
+  const details = body ? ` (${escapeHtml(body)})` : "";
+  chartEl.innerHTML = `<div class="empty-state"><p>Ошибка загрузки графика. Статус: ${statusLabel}${details}</p></div>`;
+}
+
+function setChartPlaceholder() {
+  const chartEl = document.getElementById("chart");
+  if (!chartEl) return;
+  Plotly.purge(chartEl);
+  chartEl.innerHTML =
+    "<div class=\"empty-state\"><p>Выберите позицию в таблице для отображения графика.</p></div>";
+}
+
 function buildSeriesByWarehouse(series) {
   const byWarehouse = new Map();
   const datesSet = new Set();
 
   series.forEach((entry) => {
     if (!entry?.date) return;
-    const warehouse = entry.warehouse ?? "ALL";
+    const warehouse = entry.warehouse ?? ALL_WAREHOUSES_LABEL;
     const date = entry.date;
     datesSet.add(date);
 
@@ -488,7 +519,7 @@ function buildWarehouseTimeline(warehouseMap, dates) {
 
 function buildHoverCustomData({ dates, warehouse, stock, sold, replenished, priceDisplay }) {
   return dates.map((date, index) => [
-    warehouse ?? "ALL",
+    warehouse ?? ALL_WAREHOUSES_LABEL,
     formatNumber(stock[index]),
     formatNumber(sold[index]),
     formatNumber(replenished[index]),
@@ -527,7 +558,7 @@ function buildPriceDisplayByDate({ dates, warehouses, warehouseTimelines }) {
     if (hasMultipleWarehouses && uniquePrices.size > 1) {
       isUniformAcrossWarehouses = false;
       const lines = pricesForDate.map((entry) => {
-        const label = escapeHtml(entry.warehouse ?? "ALL");
+        const label = escapeHtml(entry.warehouse ?? ALL_WAREHOUSES_LABEL);
         return `${label}: ${formatCurrency(entry.price)}`;
       });
       priceDisplay.push(lines.join("<br>"));
@@ -604,7 +635,7 @@ function renderSeries(payload) {
       ? lastSeriesParams.warehouses
       : getSelectedWarehouses();
   const warehousesLabel =
-    selectedWarehouses.length > 0 ? selectedWarehouses.join(", ") : "ALL";
+    selectedWarehouses.length > 0 ? selectedWarehouses.join(", ") : ALL_WAREHOUSES_LABEL;
   updateChartDetails({ item: payload?.item, warehousesLabel });
 
   if (kpiRank) {
@@ -695,7 +726,7 @@ function renderSeries(payload) {
     });
 
     const legendGroup = `warehouse-${index}`;
-    const legendTitle = warehouse ?? "ALL";
+    const legendTitle = warehouse ?? ALL_WAREHOUSES_LABEL;
     const hasStockTrace = stockToggle?.checked && timeline.stock.some((value) => value !== null);
 
     if (showPerWarehouse && hasStockTrace) {
@@ -720,7 +751,7 @@ function renderSeries(payload) {
       traces.push({
         x: [dates[0]],
         y: [null],
-        name: warehouse ?? "ALL",
+        name: warehouse ?? ALL_WAREHOUSES_LABEL,
         type: "scatter",
         mode: "lines",
         line: { color: colors[index], width: 2 },
@@ -766,7 +797,9 @@ function renderSeries(payload) {
   aggregated.price = aggregatedPriceSum.map((sum, index) =>
     aggregatedPriceCount[index] > 0 ? sum / aggregatedPriceCount[index] : null
   );
-  const aggregateWarehouse = hasMultipleWarehouses ? "ALL" : warehouses[0] ?? "ALL";
+  const aggregateWarehouse = hasMultipleWarehouses
+    ? ALL_WAREHOUSES_LABEL
+    : warehouses[0] ?? ALL_WAREHOUSES_LABEL;
   const aggregateCustomData = buildHoverCustomData({
     dates,
     warehouse: aggregateWarehouse,
@@ -853,7 +886,8 @@ function renderSeries(payload) {
     kpiStock.textContent = formatNumber(latestStock);
   }
   if (kpiWarehouses) {
-    kpiWarehouses.textContent = warehouses.length > 0 ? warehouses.join(", ") : "—";
+    kpiWarehouses.textContent =
+      warehouses.length > 0 ? warehouses.join(", ") : ALL_WAREHOUSES_LABEL;
   }
   if (kpiPrice) {
     const latestPrices = warehouseEntries
@@ -1017,6 +1051,7 @@ async function fetchSeriesWithParams({
   if (!dateFrom || !dateTo) {
     return;
   }
+  setChartLoadingState();
   updateSumWarehouseToggle(warehouses ?? getSelectedWarehouses());
   const resolvedCompany = company || getSelectedCompany();
   const params = new URLSearchParams();
@@ -1044,6 +1079,16 @@ async function fetchSeriesWithParams({
   }
   const result = await safeFetch(url);
   if (!result.response?.ok) {
+    if (DEBUG) {
+      console.error("seriesError", {
+        status: result.response?.status,
+        body: result.errorMessage || result.body,
+      });
+    }
+    setChartErrorState({
+      status: result.response?.status,
+      body: result.errorMessage || result.body,
+    });
     return;
   }
   if (DEBUG) {
@@ -1068,15 +1113,22 @@ async function fetchSeries() {
     await fetchSeriesForItem(filteredTopItems[selectedTopIndex]);
     return;
   }
-  if (topItems.length > 0) {
-    setSelectedItem(topItems[0], { scroll: false });
-  }
+  setChartPlaceholder();
 }
 
 async function fetchSeriesForItem(item) {
+  if (!item?.item_id) {
+    if (DEBUG) {
+      console.error("seriesError", { message: "missing item_id", item });
+    }
+    setChartErrorState({ status: "—", body: "Не найден item_id для выбранной строки." });
+    return;
+  }
   const { company, warehouses, dateFrom, dateTo } = collectFilters();
   const rowWarehouse =
-    topGroupByWarehouse && item?.warehouse && item.warehouse !== "ALL" ? item.warehouse : null;
+    topGroupByWarehouse && item?.warehouse && item.warehouse !== ALL_WAREHOUSES_LABEL
+      ? item.warehouse
+      : null;
   const resolvedWarehouses = rowWarehouse
     ? [rowWarehouse]
     : warehouses.length > 0
@@ -1186,8 +1238,11 @@ async function fetchTop() {
   updatePaginationControls(totalCount);
   if (selectedTopIndex >= 0 && filteredTopItems[selectedTopIndex]) {
     fetchSeriesForItem(filteredTopItems[selectedTopIndex]);
-  } else if (filteredTopItems.length > 0) {
-    setSelectedItem(filteredTopItems[0], { scroll: false });
+  } else {
+    selectedTopKey = null;
+    selectedTopIndex = -1;
+    renderTopTable(filteredTopItems);
+    setChartPlaceholder();
   }
 }
 
@@ -1261,3 +1316,4 @@ companySwitcher?.addEventListener("change", () => {
 loadWarehouseOptions();
 initWarehouseActions();
 fetchLatestLoadedDate();
+setChartPlaceholder();

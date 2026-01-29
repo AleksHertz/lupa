@@ -261,7 +261,7 @@ def series(
             "item_id": item_id,
         },
     )
-    return get_series_v2(
+    payload = get_series_v2(
         session=session,
         item_id=item_id,
         company=company_norm,
@@ -269,6 +269,14 @@ def series(
         date_from=date_from,
         date_to=date_to,
     )
+    logger.info(
+        "Series response",
+        extra={
+            "rows_count": len(payload.get("series", [])),
+            "item_id": item_id,
+        },
+    )
+    return payload
 
 
 @app.get("/filters/suggestions")

@@ -15,6 +15,34 @@ body {
   display: block;
 }
 
+.page {
+  display: block;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.section {
+  width: 100%;
+  margin: 12px 0;
+}
+
+#topTableSection,
+#chartSection,
+#kpiSection {
+  width: 100%;
+}
+
+#results {
+  display: flex;
+  flex-direction: column;
+}
+
 .container > header,
 .container > section {
   width: 100%;
@@ -123,9 +151,10 @@ button:hover {
   margin-top: 12px;
 }
 
+#chart,
 .chart {
   width: 100%;
-  min-height: 420px;
+  min-height: 460px;
 }
 
 .hint {

@@ -337,9 +337,12 @@ def get_series_v2(
             "Series result summary",
             extra={
                 "rows_count": 0,
+                "series_points_count": 0,
                 "warehouses_count": 0,
                 "min_date": availability_range["min"],
                 "max_date": availability_range["max"],
+                "series_min_date": None,
+                "series_max_date": None,
             },
         )
         return _empty_series_response()
@@ -449,9 +452,12 @@ def get_series_v2(
             "Series result summary",
             extra={
                 "rows_count": 0,
+                "series_points_count": 0,
                 "warehouses_count": 0,
                 "min_date": availability_range["min"],
                 "max_date": availability_range["max"],
+                "series_min_date": None,
+                "series_max_date": None,
             },
         )
         return _empty_series_response()
@@ -493,13 +499,19 @@ def get_series_v2(
     )
     rows = session.execute(stmt).mappings().all()
     warehouses_seen = {row["warehouse"] for row in rows}
+    series_dates = [row["data_date"] for row in rows if row.get("data_date")]
+    series_min_date = min(series_dates) if series_dates else None
+    series_max_date = max(series_dates) if series_dates else None
     logger.info(
         "Series result summary",
         extra={
             "rows_count": len(rows),
+            "series_points_count": len(rows),
             "warehouses_count": len(warehouses_seen),
             "min_date": availability_range["min"],
             "max_date": availability_range["max"],
+            "series_min_date": series_min_date.isoformat() if series_min_date else None,
+            "series_max_date": series_max_date.isoformat() if series_max_date else None,
         },
     )
     series: list[dict[str, Any]] = []

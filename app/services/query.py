@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from cachetools import TTLCache
-from sqlalchemy import Date, and_, func, literal, or_, select, text, true, union_all
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import FactDeltaChange, FactSnapshot, Item
@@ -261,321 +261,199 @@ def get_series_v2(
     date_from: date,
     date_to: date,
 ) -> dict[str, Any]:
-    item_data: dict[str, Any] | None = None
-    snapshot_min_date = None
-    if item_id is not None:
-        item_stmt = select(
-            Item.canonical_sku,
-            Item.name,
-            Item.manufacturer_norm.label("manufacturer"),
-            Item.group_name,
-            Item.project_label,
-        ).where(Item.id == item_id)
-        if company:
-            item_stmt = item_stmt.where(Item.company == company)
-        item_row = session.execute(item_stmt).mappings().first()
-        if item_row:
-            item_data = dict(item_row)
-
-    availability_range = {"min": None, "max": None}
-    if item_id is not None:
-        snapshot_min_stmt = select(func.min(FactSnapshot.data_date)).where(
-            FactSnapshot.item_id == item_id
-        )
-        delta_dates_stmt = select(FactDeltaChange.data_date.label("data_date")).where(
-            FactDeltaChange.item_id == item_id
-        )
-        snapshot_dates_stmt = select(FactSnapshot.data_date.label("data_date")).where(
-            FactSnapshot.item_id == item_id
-        )
-        if company:
-            snapshot_min_stmt = snapshot_min_stmt.where(FactSnapshot.company == company)
-            delta_dates_stmt = delta_dates_stmt.where(FactDeltaChange.company == company)
-            snapshot_dates_stmt = snapshot_dates_stmt.where(
-                FactSnapshot.company == company
-            )
-        if warehouses:
-            snapshot_min_stmt = snapshot_min_stmt.where(
-                FactSnapshot.warehouse.in_(warehouses)
-            )
-            delta_dates_stmt = delta_dates_stmt.where(
-                FactDeltaChange.warehouse.in_(warehouses)
-            )
-            snapshot_dates_stmt = snapshot_dates_stmt.where(
-                FactSnapshot.warehouse.in_(warehouses)
-            )
-        snapshot_min_date = session.execute(snapshot_min_stmt).scalar()
-        availability_subq = delta_dates_stmt.union_all(snapshot_dates_stmt).subquery()
-        availability_stmt = select(
-            func.min(availability_subq.c.data_date).label("min_date"),
-            func.max(availability_subq.c.data_date).label("max_date"),
-        )
-        availability_row = session.execute(availability_stmt).one()
-        availability_range = {
-            "min": availability_row.min_date.isoformat()
-            if availability_row.min_date
-            else None,
-            "max": availability_row.max_date.isoformat()
-            if availability_row.max_date
-            else None,
-        }
-
-    effective_start = date_from
-    if snapshot_min_date and snapshot_min_date > date_from:
-        effective_start = snapshot_min_date
-
-    def _empty_series_response() -> dict[str, Any]:
+    if item_id is None:
         return {
-            "item": item_data,
-            "summary": {"rank": None, "sold_total": 0, "replenished_total": 0},
+            "item_id": None,
+            "company": company,
+            "warehouses": warehouses or [],
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+            "available_range": {"min": None, "max": None},
             "series": [],
-            "available_range": availability_range,
         }
-
-    if availability_range["min"] is None and availability_range["max"] is None:
-        logger.info(
-            "Series result summary",
-            extra={
-                "rows_count": 0,
-                "series_points_count": 0,
-                "warehouses_count": 0,
-                "min_date": availability_range["min"],
-                "max_date": availability_range["max"],
-                "series_min_date": None,
-                "series_max_date": None,
-            },
-        )
-        return _empty_series_response()
 
     logger.info(
-        "Series availability",
+        "Series normalized params",
         extra={
-            "available_min": availability_range["min"],
-            "available_max": availability_range["max"],
-            "effective_start": effective_start.isoformat(),
+            "item_id": item_id,
+            "company": company,
+            "warehouses": warehouses,
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
         },
     )
 
-    calendar = (
-        select(
-            func.generate_series(
-                effective_start,
-                date_to,
-                text("interval '1 day'"),
-            )
-            .cast(Date)
-            .label("data_date")
-        )
-        .subquery()
+    availability_filters = [FactSnapshot.item_id == item_id]
+    delta_availability_filters = [FactDeltaChange.item_id == item_id]
+    if company:
+        availability_filters.append(FactSnapshot.company == company)
+        delta_availability_filters.append(FactDeltaChange.company == company)
+    if warehouses:
+        availability_filters.append(FactSnapshot.warehouse.in_(warehouses))
+        delta_availability_filters.append(FactDeltaChange.warehouse.in_(warehouses))
+
+    availability_snapshot = select(FactSnapshot.data_date.label("data_date")).where(
+        *availability_filters
     )
+    availability_delta = select(FactDeltaChange.data_date.label("data_date")).where(
+        *delta_availability_filters
+    )
+    availability_subq = availability_snapshot.union_all(availability_delta).subquery()
+    availability_row = session.execute(
+        select(
+            func.min(availability_subq.c.data_date).label("min_date"),
+            func.max(availability_subq.c.data_date).label("max_date"),
+        )
+    ).one()
+    availability_range = {
+        "min": availability_row.min_date.isoformat() if availability_row.min_date else None,
+        "max": availability_row.max_date.isoformat() if availability_row.max_date else None,
+    }
 
     if warehouses:
-        warehouse_subq = union_all(
-            *[select(literal(warehouse).label("warehouse")) for warehouse in warehouses]
-        ).subquery()
+        resolved_warehouses = list(warehouses)
     else:
-        snapshot_warehouses = (
+        warehouse_snapshot_stmt = (
             select(FactSnapshot.warehouse.label("warehouse"))
+            .where(FactSnapshot.item_id == item_id)
             .where(FactSnapshot.data_date >= date_from)
             .where(FactSnapshot.data_date <= date_to)
-            .where(FactSnapshot.item_id == item_id)
         )
-        delta_warehouses = (
+        warehouse_delta_stmt = (
             select(FactDeltaChange.warehouse.label("warehouse"))
+            .where(FactDeltaChange.item_id == item_id)
             .where(FactDeltaChange.data_date >= date_from)
             .where(FactDeltaChange.data_date <= date_to)
-            .where(FactDeltaChange.item_id == item_id)
         )
         if company:
-            snapshot_warehouses = snapshot_warehouses.where(FactSnapshot.company == company)
-            delta_warehouses = delta_warehouses.where(FactDeltaChange.company == company)
-        warehouse_subq = snapshot_warehouses.union(delta_warehouses).subquery()
-
-    delta_stmt = (
-        select(
-            FactDeltaChange.data_date.label("data_date"),
-            FactDeltaChange.warehouse.label("warehouse"),
-            func.sum(FactDeltaChange.sold_qty).label("sold"),
-            func.sum(FactDeltaChange.replenished_qty).label("repl"),
+            warehouse_snapshot_stmt = warehouse_snapshot_stmt.where(
+                FactSnapshot.company == company
+            )
+            warehouse_delta_stmt = warehouse_delta_stmt.where(
+                FactDeltaChange.company == company
+            )
+        warehouse_union = (
+            warehouse_snapshot_stmt.union(warehouse_delta_stmt).subquery()
         )
-        .where(FactDeltaChange.data_date >= effective_start)
-        .where(FactDeltaChange.data_date <= date_to)
-        .where(FactDeltaChange.item_id == item_id)
-    )
-    snapshot_stmt = (
+        resolved_warehouses = (
+            session.execute(
+                select(warehouse_union.c.warehouse)
+                .distinct()
+                .order_by(warehouse_union.c.warehouse)
+            )
+            .scalars()
+            .all()
+        )
+
+    snapshot_filters = [
+        FactSnapshot.item_id == item_id,
+        FactSnapshot.data_date >= date_from,
+        FactSnapshot.data_date <= date_to,
+    ]
+    delta_filters = [
+        FactDeltaChange.item_id == item_id,
+        FactDeltaChange.data_date >= date_from,
+        FactDeltaChange.data_date <= date_to,
+    ]
+    if company:
+        snapshot_filters.append(FactSnapshot.company == company)
+        delta_filters.append(FactDeltaChange.company == company)
+    if resolved_warehouses:
+        snapshot_filters.append(FactSnapshot.warehouse.in_(resolved_warehouses))
+        delta_filters.append(FactDeltaChange.warehouse.in_(resolved_warehouses))
+
+    snapshot_subq = (
         select(
             FactSnapshot.data_date.label("data_date"),
+            FactSnapshot.company.label("company"),
             FactSnapshot.warehouse.label("warehouse"),
-            func.sum(FactSnapshot.stock_qty).label("stock"),
+            FactSnapshot.item_id.label("item_id"),
+            func.sum(FactSnapshot.stock_qty).label("stock_qty"),
             func.avg(FactSnapshot.price).label("price"),
         )
-        .where(FactSnapshot.data_date >= effective_start)
-        .where(FactSnapshot.data_date <= date_to)
-        .where(FactSnapshot.item_id == item_id)
-    )
-    if company:
-        delta_stmt = delta_stmt.where(FactDeltaChange.company == company)
-        snapshot_stmt = snapshot_stmt.where(FactSnapshot.company == company)
-    if warehouses:
-        delta_stmt = delta_stmt.where(FactDeltaChange.warehouse.in_(warehouses))
-        snapshot_stmt = snapshot_stmt.where(FactSnapshot.warehouse.in_(warehouses))
-
-    delta_exists_stmt = (
-        select(FactDeltaChange.data_date)
-        .where(FactDeltaChange.data_date >= effective_start)
-        .where(FactDeltaChange.data_date <= date_to)
-        .where(FactDeltaChange.item_id == item_id)
-    )
-    snapshot_exists_stmt = (
-        select(FactSnapshot.data_date)
-        .where(FactSnapshot.data_date >= effective_start)
-        .where(FactSnapshot.data_date <= date_to)
-        .where(FactSnapshot.item_id == item_id)
-    )
-    if company:
-        delta_exists_stmt = delta_exists_stmt.where(FactDeltaChange.company == company)
-        snapshot_exists_stmt = snapshot_exists_stmt.where(
-            FactSnapshot.company == company
+        .where(*snapshot_filters)
+        .group_by(
+            FactSnapshot.data_date,
+            FactSnapshot.company,
+            FactSnapshot.warehouse,
+            FactSnapshot.item_id,
         )
-    if warehouses:
-        delta_exists_stmt = delta_exists_stmt.where(
-            FactDeltaChange.warehouse.in_(warehouses)
-        )
-        snapshot_exists_stmt = snapshot_exists_stmt.where(
-            FactSnapshot.warehouse.in_(warehouses)
-        )
-    has_delta = session.execute(delta_exists_stmt.limit(1)).first()
-    has_snapshot = session.execute(snapshot_exists_stmt.limit(1)).first()
-
-    if not has_delta and not has_snapshot:
-        logger.info(
-            "Series result summary",
-            extra={
-                "rows_count": 0,
-                "series_points_count": 0,
-                "warehouses_count": 0,
-                "min_date": availability_range["min"],
-                "max_date": availability_range["max"],
-                "series_min_date": None,
-                "series_max_date": None,
-            },
-        )
-        return _empty_series_response()
-
-    delta_stmt = (
-        delta_stmt.group_by(FactDeltaChange.data_date, FactDeltaChange.warehouse)
         .subquery()
     )
-    snapshot_stmt = (
-        snapshot_stmt.group_by(FactSnapshot.data_date, FactSnapshot.warehouse)
+    delta_subq = (
+        select(
+            FactDeltaChange.data_date.label("data_date"),
+            FactDeltaChange.company.label("company"),
+            FactDeltaChange.warehouse.label("warehouse"),
+            FactDeltaChange.item_id.label("item_id"),
+            func.sum(FactDeltaChange.sold_qty).label("sold_qty"),
+            func.sum(FactDeltaChange.replenished_qty).label("replenished_qty"),
+        )
+        .where(*delta_filters)
+        .group_by(
+            FactDeltaChange.data_date,
+            FactDeltaChange.company,
+            FactDeltaChange.warehouse,
+            FactDeltaChange.item_id,
+        )
         .subquery()
     )
 
     stmt = (
         select(
-            calendar.c.data_date,
-            warehouse_subq.c.warehouse,
-            func.coalesce(delta_stmt.c.sold, 0).label("sold"),
-            func.coalesce(delta_stmt.c.repl, 0).label("repl"),
-            snapshot_stmt.c.stock,
-            snapshot_stmt.c.price,
-        )
-        .select_from(calendar.join(warehouse_subq, true()))
-        .outerjoin(
-            delta_stmt,
-            and_(
-                delta_stmt.c.data_date == calendar.c.data_date,
-                delta_stmt.c.warehouse == warehouse_subq.c.warehouse,
+            snapshot_subq.c.data_date.label("data_date"),
+            snapshot_subq.c.warehouse.label("warehouse"),
+            snapshot_subq.c.stock_qty.label("stock_qty"),
+            snapshot_subq.c.price.label("price"),
+            func.coalesce(delta_subq.c.sold_qty, 0).label("sold_qty"),
+            func.coalesce(delta_subq.c.replenished_qty, 0).label(
+                "replenished_qty"
             ),
         )
-        .outerjoin(
-            snapshot_stmt,
-            and_(
-                snapshot_stmt.c.data_date == calendar.c.data_date,
-                snapshot_stmt.c.warehouse == warehouse_subq.c.warehouse,
-            ),
+        .select_from(
+            snapshot_subq.outerjoin(
+                delta_subq,
+                and_(
+                    snapshot_subq.c.data_date == delta_subq.c.data_date,
+                    snapshot_subq.c.company == delta_subq.c.company,
+                    snapshot_subq.c.warehouse == delta_subq.c.warehouse,
+                    snapshot_subq.c.item_id == delta_subq.c.item_id,
+                ),
+            )
         )
-        .order_by(warehouse_subq.c.warehouse, calendar.c.data_date)
+        .order_by(snapshot_subq.c.data_date.asc(), snapshot_subq.c.warehouse.asc())
     )
     rows = session.execute(stmt).mappings().all()
-    warehouses_seen = {row["warehouse"] for row in rows}
-    series_dates = [row["data_date"] for row in rows if row.get("data_date")]
-    series_min_date = min(series_dates) if series_dates else None
-    series_max_date = max(series_dates) if series_dates else None
+    series = [
+        {
+            "date": row["data_date"].isoformat(),
+            "warehouse": row["warehouse"],
+            "stock_qty": int(row["stock_qty"]) if row["stock_qty"] is not None else 0,
+            "price": float(row["price"]) if row["price"] is not None else 0.0,
+            "sold_qty": int(row["sold_qty"] or 0),
+            "replenished_qty": int(row["replenished_qty"] or 0),
+        }
+        for row in rows
+    ]
+    warehouses_seen = {entry["warehouse"] for entry in series}
     logger.info(
         "Series result summary",
         extra={
-            "rows_count": len(rows),
-            "series_points_count": len(rows),
+            "rows_count": len(series),
             "warehouses_count": len(warehouses_seen),
-            "min_date": availability_range["min"],
-            "max_date": availability_range["max"],
-            "series_min_date": series_min_date.isoformat() if series_min_date else None,
-            "series_max_date": series_max_date.isoformat() if series_max_date else None,
+            "available_min": availability_range["min"],
+            "available_max": availability_range["max"],
         },
     )
-    series: list[dict[str, Any]] = []
-    sold_total = 0
-    replenished_total = 0
-    last_stock_by_warehouse: dict[str, int | None] = {}
-    last_price_by_warehouse: dict[str, float | None] = {}
-    for row in rows:
-        warehouse = row.warehouse
-        sold_value = int(row.sold or 0)
-        repl_value = int(row.repl or 0)
-        sold_total += sold_value
-        replenished_total += repl_value
-        stock_value = int(row.stock) if row.stock is not None else None
-        price_value = float(row.price) if row.price is not None else None
-        if stock_value is None:
-            stock_value = last_stock_by_warehouse.get(warehouse)
-        if price_value is None:
-            price_value = last_price_by_warehouse.get(warehouse)
-        last_stock_by_warehouse[warehouse] = stock_value
-        last_price_by_warehouse[warehouse] = price_value
-        series.append(
-            {
-                "date": row.data_date.isoformat(),
-                "warehouse": warehouse,
-                "stock": stock_value,
-                "sold": sold_value,
-                "repl": repl_value,
-                "price": price_value,
-            }
-        )
-
-    rank = None
-    if item_id is not None:
-        rank_stmt = (
-            select(
-                FactDeltaChange.item_id.label("item_id"),
-                func.dense_rank()
-                .over(order_by=func.sum(FactDeltaChange.sold_qty).desc())
-                .label("rank"),
-            )
-            .where(FactDeltaChange.data_date >= date_from)
-            .where(FactDeltaChange.data_date <= date_to)
-        )
-        if company:
-            rank_stmt = rank_stmt.where(FactDeltaChange.company == company)
-        if warehouses:
-            rank_stmt = rank_stmt.where(FactDeltaChange.warehouse.in_(warehouses))
-        rank_stmt = rank_stmt.group_by(FactDeltaChange.item_id).subquery()
-        rank = session.execute(
-            select(rank_stmt.c.rank).where(rank_stmt.c.item_id == item_id)
-        ).scalar()
-        if rank is not None:
-            rank = int(rank)
 
     return {
-        "item": item_data,
-        "summary": {
-            "rank": rank,
-            "sold_total": sold_total,
-            "replenished_total": replenished_total,
-        },
-        "series": series,
+        "item_id": item_id,
+        "company": company,
+        "warehouses": resolved_warehouses,
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
         "available_range": availability_range,
+        "series": series,
     }
 
 

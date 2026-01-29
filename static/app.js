@@ -449,6 +449,40 @@ function setChartPlaceholder() {
     "<div class=\"empty-state\"><p>Выберите позицию в таблице для отображения графика.</p></div>";
 }
 
+function normalizeSeriesEntry(entry) {
+  if (!entry) return null;
+  const rawDate = entry.date ?? entry.data_date ?? entry.day ?? entry.period;
+  const date =
+    rawDate instanceof Date ? rawDate.toISOString().slice(0, 10) : rawDate ? `${rawDate}` : null;
+  const sold = entry.sold ?? entry.sold_qty ?? entry.sales ?? 0;
+  const replenished =
+    entry.repl ?? entry.replenished ?? entry.replenished_qty ?? entry.restock ?? 0;
+  const stock = entry.stock ?? entry.stock_qty ?? entry.balance ?? null;
+  const price = entry.price ?? entry.price_rub ?? entry.last_price ?? null;
+  return {
+    date,
+    warehouse: entry.warehouse ?? entry.storage ?? entry.warehouse_name ?? null,
+    sold,
+    repl: replenished,
+    stock,
+    price,
+  };
+}
+
+function extractSeries(payload) {
+  if (!payload) return [];
+  if (Array.isArray(payload.series)) return payload.series;
+  if (Array.isArray(payload.points)) return payload.points;
+  if (Array.isArray(payload.items)) return payload.items;
+  return [];
+}
+
+function normalizeSeries(series) {
+  return series
+    .map((entry) => normalizeSeriesEntry(entry))
+    .filter((entry) => entry && entry.date);
+}
+
 function buildSeriesByWarehouse(series) {
   const byWarehouse = new Map();
   const datesSet = new Set();
@@ -627,13 +661,8 @@ function createWarehouseColors(count) {
 
 function renderSeries(payload) {
   const summary = payload?.summary || {};
-  const series = Array.isArray(payload?.series)
-    ? payload.series
-    : Array.isArray(payload?.points)
-      ? payload.points
-      : Array.isArray(payload?.items)
-        ? payload.items
-        : [];
+  const rawSeries = extractSeries(payload);
+  const series = normalizeSeries(rawSeries);
   lastSeriesPayload = payload;
 
   const selectedWarehouses =
@@ -650,7 +679,7 @@ function renderSeries(payload) {
   kpiSold.textContent = formatNumber(summary.sold_total);
   kpiReplenished.textContent = formatNumber(summary.replenished_total);
 
-  if (series.length === 0) {
+  if (rawSeries.length === 0) {
     if (kpiStock) kpiStock.textContent = "—";
     if (kpiPrice) kpiPrice.textContent = "—";
     if (kpiWarehouses) kpiWarehouses.textContent = "—";
@@ -666,6 +695,19 @@ function renderSeries(payload) {
           dateTo: maxDate,
         });
       }
+    });
+    return;
+  }
+
+  if (series.length === 0) {
+    if (DEBUG) {
+      console.debug("SERIES RESPONSE", payload);
+      console.debug("SERIES LENGTH", rawSeries.length);
+      console.debug("FIRST POINT", rawSeries?.[0]);
+    }
+    setChartErrorState({
+      status: "—",
+      body: "Данные серии не распознаны. Проверьте схему ответа.",
     });
     return;
   }
@@ -931,16 +973,26 @@ function renderSeries(payload) {
     },
   };
 
+  if (DEBUG) {
+    console.debug("RENDER CHART CALLED");
+  }
   try {
     if (!window.Plotly?.newPlot) {
       throw new Error("Plotly не загружен");
     }
-    Plotly.newPlot("chart", traces, layout, {
+    const chartEl = document.getElementById("chart");
+    if (!chartEl) {
+      throw new Error("Контейнер графика #chart не найден");
+    }
+    Plotly.newPlot(chartEl, traces, layout, {
       responsive: true,
     });
   } catch (error) {
     console.error("chartRenderError", error);
-    setChartErrorState({ status: "—", body: "Ошибка отрисовки графика." });
+    setChartErrorState({
+      status: "—",
+      body: `Ошибка отрисовки графика: ${error?.message ?? error}`,
+    });
   }
 }
 
@@ -1111,18 +1163,14 @@ async function fetchSeriesWithParams({
     });
     return;
   }
+  const resp = result.payload ?? {};
+  const series = extractSeries(resp);
+  console.debug("SERIES RESPONSE", resp);
+  console.debug("SERIES LENGTH", series?.length);
+  console.debug("FIRST POINT", series?.[0]);
   if (DEBUG) {
-    const payload = result.payload ?? {};
-    const series = Array.isArray(payload.series)
-      ? payload.series
-      : Array.isArray(payload.points)
-        ? payload.points
-        : Array.isArray(payload.items)
-          ? payload.items
-          : [];
-    console.debug("series keys", Object.keys(payload));
-    console.debug("series length", series.length);
-    console.debug("available_range", payload.available_range);
+    console.debug("series keys", Object.keys(resp));
+    console.debug("available_range", resp.available_range);
     if (series.length > 0) {
       console.debug("series sample", series.slice(0, 3));
     }

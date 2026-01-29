@@ -19,7 +19,7 @@ const sumWarehouseToggle = document.getElementById("toggle-sum-warehouses");
 const companySwitcher = document.getElementById("company-switcher");
 const fetchError = document.getElementById("fetch-error");
 const latestLoadedBadge = document.getElementById("latest-loaded-date");
-const chartSection = document.getElementById("chart-section");
+const chartSection = document.getElementById("chartSection");
 const detailSku = document.getElementById("detail-sku");
 const detailName = document.getElementById("detail-name");
 const detailManufacturer = document.getElementById("detail-manufacturer");
@@ -371,7 +371,7 @@ function setSelectedItem(item, options = {}) {
   if (!item) return;
   if (DEBUG) {
     const { warehouses, dateFrom, dateTo, company } = collectFilters();
-    console.log("selectedRow", {
+    console.debug("selected row", {
       itemId: item?.item_id,
       sku: item?.canonical_sku ?? item?.sku,
       rank: item?.rank,
@@ -627,7 +627,13 @@ function createWarehouseColors(count) {
 
 function renderSeries(payload) {
   const summary = payload?.summary || {};
-  const series = Array.isArray(payload?.series) ? payload.series : [];
+  const series = Array.isArray(payload?.series)
+    ? payload.series
+    : Array.isArray(payload?.points)
+      ? payload.points
+      : Array.isArray(payload?.items)
+        ? payload.items
+        : [];
   lastSeriesPayload = payload;
 
   const selectedWarehouses =
@@ -925,9 +931,17 @@ function renderSeries(payload) {
     },
   };
 
-  Plotly.newPlot("chart", traces, layout, {
-    responsive: true,
-  });
+  try {
+    if (!window.Plotly?.newPlot) {
+      throw new Error("Plotly не загружен");
+    }
+    Plotly.newPlot("chart", traces, layout, {
+      responsive: true,
+    });
+  } catch (error) {
+    console.error("chartRenderError", error);
+    setChartErrorState({ status: "—", body: "Ошибка отрисовки графика." });
+  }
 }
 
 function getUploadMode() {
@@ -1077,7 +1091,13 @@ async function fetchSeriesWithParams({
     });
     console.log("seriesUrl", url);
   }
+  if (DEBUG) {
+    console.debug("seriesFetchUrl", url);
+  }
   const result = await safeFetch(url);
+  if (DEBUG) {
+    console.debug("seriesFetchStatus", result.response?.status ?? "—");
+  }
   if (!result.response?.ok) {
     if (DEBUG) {
       console.error("seriesError", {
@@ -1092,8 +1112,20 @@ async function fetchSeriesWithParams({
     return;
   }
   if (DEBUG) {
-    const seriesCount = Array.isArray(result.payload?.series) ? result.payload.series.length : 0;
-    console.log("seriesResponseSize", { points: seriesCount });
+    const payload = result.payload ?? {};
+    const series = Array.isArray(payload.series)
+      ? payload.series
+      : Array.isArray(payload.points)
+        ? payload.points
+        : Array.isArray(payload.items)
+          ? payload.items
+          : [];
+    console.debug("series keys", Object.keys(payload));
+    console.debug("series length", series.length);
+    console.debug("available_range", payload.available_range);
+    if (series.length > 0) {
+      console.debug("series sample", series.slice(0, 3));
+    }
   }
   lastSeriesParams = {
     itemId,

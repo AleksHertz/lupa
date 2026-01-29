@@ -262,6 +262,7 @@ def get_series_v2(
     date_to: date,
 ) -> dict[str, Any]:
     item_data: dict[str, Any] | None = None
+    snapshot_min_date = None
     if item_id is not None:
         item_stmt = select(
             Item.canonical_sku,
@@ -278,6 +279,9 @@ def get_series_v2(
 
     availability_range = {"min": None, "max": None}
     if item_id is not None:
+        snapshot_min_stmt = select(func.min(FactSnapshot.data_date)).where(
+            FactSnapshot.item_id == item_id
+        )
         delta_dates_stmt = select(FactDeltaChange.data_date.label("data_date")).where(
             FactDeltaChange.item_id == item_id
         )
@@ -285,17 +289,22 @@ def get_series_v2(
             FactSnapshot.item_id == item_id
         )
         if company:
+            snapshot_min_stmt = snapshot_min_stmt.where(FactSnapshot.company == company)
             delta_dates_stmt = delta_dates_stmt.where(FactDeltaChange.company == company)
             snapshot_dates_stmt = snapshot_dates_stmt.where(
                 FactSnapshot.company == company
             )
         if warehouses:
+            snapshot_min_stmt = snapshot_min_stmt.where(
+                FactSnapshot.warehouse.in_(warehouses)
+            )
             delta_dates_stmt = delta_dates_stmt.where(
                 FactDeltaChange.warehouse.in_(warehouses)
             )
             snapshot_dates_stmt = snapshot_dates_stmt.where(
                 FactSnapshot.warehouse.in_(warehouses)
             )
+        snapshot_min_date = session.execute(snapshot_min_stmt).scalar()
         availability_subq = delta_dates_stmt.union_all(snapshot_dates_stmt).subquery()
         availability_stmt = select(
             func.min(availability_subq.c.data_date).label("min_date"),
@@ -310,6 +319,10 @@ def get_series_v2(
             if availability_row.max_date
             else None,
         }
+
+    effective_start = date_from
+    if snapshot_min_date and snapshot_min_date > date_from:
+        effective_start = snapshot_min_date
 
     def _empty_series_response() -> dict[str, Any]:
         return {
@@ -331,10 +344,19 @@ def get_series_v2(
         )
         return _empty_series_response()
 
+    logger.info(
+        "Series availability",
+        extra={
+            "available_min": availability_range["min"],
+            "available_max": availability_range["max"],
+            "effective_start": effective_start.isoformat(),
+        },
+    )
+
     calendar = (
         select(
             func.generate_series(
-                date_from,
+                effective_start,
                 date_to,
                 text("interval '1 day'"),
             )
@@ -373,7 +395,7 @@ def get_series_v2(
             func.sum(FactDeltaChange.sold_qty).label("sold"),
             func.sum(FactDeltaChange.replenished_qty).label("repl"),
         )
-        .where(FactDeltaChange.data_date >= date_from)
+        .where(FactDeltaChange.data_date >= effective_start)
         .where(FactDeltaChange.data_date <= date_to)
         .where(FactDeltaChange.item_id == item_id)
     )
@@ -384,7 +406,7 @@ def get_series_v2(
             func.sum(FactSnapshot.stock_qty).label("stock"),
             func.avg(FactSnapshot.price).label("price"),
         )
-        .where(FactSnapshot.data_date >= date_from)
+        .where(FactSnapshot.data_date >= effective_start)
         .where(FactSnapshot.data_date <= date_to)
         .where(FactSnapshot.item_id == item_id)
     )
@@ -397,13 +419,13 @@ def get_series_v2(
 
     delta_exists_stmt = (
         select(FactDeltaChange.data_date)
-        .where(FactDeltaChange.data_date >= date_from)
+        .where(FactDeltaChange.data_date >= effective_start)
         .where(FactDeltaChange.data_date <= date_to)
         .where(FactDeltaChange.item_id == item_id)
     )
     snapshot_exists_stmt = (
         select(FactSnapshot.data_date)
-        .where(FactSnapshot.data_date >= date_from)
+        .where(FactSnapshot.data_date >= effective_start)
         .where(FactSnapshot.data_date <= date_to)
         .where(FactSnapshot.item_id == item_id)
     )
@@ -483,19 +505,30 @@ def get_series_v2(
     series: list[dict[str, Any]] = []
     sold_total = 0
     replenished_total = 0
+    last_stock_by_warehouse: dict[str, int | None] = {}
+    last_price_by_warehouse: dict[str, float | None] = {}
     for row in rows:
+        warehouse = row.warehouse
         sold_value = int(row.sold or 0)
         repl_value = int(row.repl or 0)
         sold_total += sold_value
         replenished_total += repl_value
+        stock_value = int(row.stock) if row.stock is not None else None
+        price_value = float(row.price) if row.price is not None else None
+        if stock_value is None:
+            stock_value = last_stock_by_warehouse.get(warehouse)
+        if price_value is None:
+            price_value = last_price_by_warehouse.get(warehouse)
+        last_stock_by_warehouse[warehouse] = stock_value
+        last_price_by_warehouse[warehouse] = price_value
         series.append(
             {
                 "date": row.data_date.isoformat(),
-                "warehouse": row.warehouse,
-                "stock": int(row.stock) if row.stock is not None else None,
+                "warehouse": warehouse,
+                "stock": stock_value,
                 "sold": sold_value,
                 "repl": repl_value,
-                "price": float(row.price) if row.price is not None else None,
+                "price": price_value,
             }
         )
 
@@ -592,6 +625,7 @@ def get_availability(session: Session, company: str | None) -> dict[str, str | N
 def get_top_sales(
     session: Session,
     limit: int,
+    offset: int = 0,
     company: str | None = None,
     warehouses: list[str] | None = None,
     sku: str | None = None,
@@ -601,7 +635,7 @@ def get_top_sales(
     group_by_warehouse: bool = True,
     date_from: date | None = None,
     date_to: date | None = None,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     group_by_columns = [
         Item.id,
         Item.canonical_sku,
@@ -682,6 +716,7 @@ def get_top_sales(
         .group_by(*group_by_columns)
         .order_by(sold_total_expr.desc())
         .limit(limit)
+        .offset(offset)
     )
 
     if company:
@@ -705,8 +740,39 @@ def get_top_sales(
     if date_to:
         stmt = stmt.where(FactDeltaChange.data_date <= date_to)
 
+    count_stmt = select(*group_by_columns).join(Item, Item.id == FactDeltaChange.item_id)
+
+    if company:
+        count_stmt = count_stmt.where(FactDeltaChange.company == company).where(
+            Item.company == company
+        )
+    if warehouses:
+        count_stmt = count_stmt.where(FactDeltaChange.warehouse.in_(warehouses))
+    if sku:
+        sku_filter = or_(
+            Item.canonical_sku == sku,
+            Item.sku_norm.ilike(f"%{sku}%"),
+        )
+        count_stmt = count_stmt.where(sku_filter)
+    if manufacturer:
+        count_stmt = count_stmt.where(Item.manufacturer_norm.ilike(f"%{manufacturer}%"))
+    if name:
+        count_stmt = count_stmt.where(Item.name.ilike(f"%{name}%"))
+    if project:
+        count_stmt = count_stmt.where(Item.project_label == project)
+    if date_from:
+        count_stmt = count_stmt.where(FactDeltaChange.data_date >= date_from)
+    if date_to:
+        count_stmt = count_stmt.where(FactDeltaChange.data_date <= date_to)
+
+    count_stmt = count_stmt.group_by(*group_by_columns).subquery()
+    total_count = session.execute(select(func.count()).select_from(count_stmt)).scalar() or 0
+
     rows = session.execute(stmt).mappings().all()
-    logger.info("Top sales result summary", extra={"rows_count": len(rows)})
+    logger.info(
+        "Top sales result summary",
+        extra={"rows_count": len(rows), "total_count": total_count},
+    )
     items = []
     required_keys = (
         "rank",
@@ -724,7 +790,15 @@ def get_top_sales(
         for key in required_keys:
             data.setdefault(key, None)
         items.append(data)
-    return items
+    return {"items": items, "total": int(total_count)}
+
+
+def get_latest_loaded_date(session: Session, company: str | None) -> str | None:
+    stmt = select(func.max(FactSnapshot.data_date))
+    if company:
+        stmt = stmt.where(FactSnapshot.company == company)
+    latest_date = session.execute(stmt).scalar()
+    return latest_date.isoformat() if latest_date else None
 
 
 def get_ingest_state(

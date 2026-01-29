@@ -27,6 +27,7 @@ from app.services.ingest import (
 from app.services.query import (
     get_availability,
     get_ingest_state,
+    get_latest_loaded_date,
     get_series_v2,
     get_suggestions,
     get_top_sales,
@@ -291,6 +292,8 @@ def filter_suggestions(
 @app.get("/top")
 def top_sales(
     limit: int = Query(100, ge=1, le=2000),
+    page: int = Query(1, ge=1),
+    offset: int | None = Query(default=None, ge=0),
     company: str | None = Query(default="alliance"),
     warehouses: list[str] | None = Query(default=None, alias="warehouses"),
     sku: str | None = Query(default=None),
@@ -328,6 +331,7 @@ def top_sales(
     if date_from is None and date_to is None:
         date_to = date.today()
         date_from = date_to - timedelta(days=30)
+    resolved_offset = offset if offset is not None else (page - 1) * limit
     logger.info(
         "Top params",
         extra={
@@ -337,11 +341,15 @@ def top_sales(
             "warehouses": warehouses,
             "limit": limit,
             "sku": sku,
+            "page": page,
+            "offset": resolved_offset,
+            "group_by_warehouse": group_by_warehouse,
         },
     )
-    items = get_top_sales(
+    payload = get_top_sales(
         session=session,
         limit=limit,
+        offset=resolved_offset,
         company=company_norm,
         warehouses=warehouses,
         sku=sku,
@@ -352,8 +360,16 @@ def top_sales(
         date_from=date_from,
         date_to=date_to,
     )
-    logger.info("Top results", extra={"rows_count": len(items)})
-    return {"items": items}
+    logger.info(
+        "Top results",
+        extra={"rows_count": len(payload.get("items", [])), "total_count": payload.get("total")},
+    )
+    return {
+        "items": payload.get("items", []),
+        "total": payload.get("total", 0),
+        "page": page,
+        "page_size": limit,
+    }
 
 
 @app.get("/availability")
@@ -363,6 +379,17 @@ def availability(
 ):
     company_norm = _normalize_company(_normalize_blank(company))
     return get_availability(session=session, company=company_norm)
+
+
+@app.get("/meta/latest_date")
+def latest_loaded_date(
+    company: str | None = Query(default="alliance"),
+    session: Session = Depends(get_session),
+):
+    company_norm = _normalize_company(_normalize_blank(company))
+    latest_date = get_latest_loaded_date(session=session, company=company_norm)
+    logger.info("Latest loaded date", extra={"company": company_norm, "latest_date": latest_date})
+    return {"latest_date": latest_date}
 
 
 @app.get("/health")

@@ -7,23 +7,32 @@ const warehouseList = document.getElementById("filter-warehouse");
 const warehouseSelectAllButton = document.getElementById("warehouse-select-all");
 const warehouseClearButton = document.getElementById("warehouse-clear");
 const topTableBody = document.getElementById("top-table-body");
-const topLimitGroup = document.getElementById("top-limit");
 const topSearchInput = document.getElementById("top-search");
-const topPrevButton = document.getElementById("top-prev");
-const topNextButton = document.getElementById("top-next");
-const topJumpInput = document.getElementById("top-jump-rank");
-const topJumpButton = document.getElementById("top-jump-btn");
+const topPagePrevButton = document.getElementById("top-page-prev");
+const topPageNextButton = document.getElementById("top-page-next");
+const topPageNumberInput = document.getElementById("top-page-number");
+const topPageSizeSelect = document.getElementById("top-page-size");
+const topPageTotal = document.getElementById("top-page-total");
 const datePreset = document.getElementById("filter-date-preset");
 const stockToggle = document.getElementById("toggle-stock");
+const sumWarehouseToggle = document.getElementById("toggle-sum-warehouses");
 const companySwitcher = document.getElementById("company-switcher");
 const fetchError = document.getElementById("fetch-error");
+const latestLoadedBadge = document.getElementById("latest-loaded-date");
+const chartSection = document.getElementById("chart-section");
+const detailSku = document.getElementById("detail-sku");
+const detailName = document.getElementById("detail-name");
+const detailManufacturer = document.getElementById("detail-manufacturer");
+const detailWarehouses = document.getElementById("detail-warehouses");
 
 const BASE_URL = window.BASE_URL ?? "";
 const buildUrl = (path) => `${BASE_URL}${path}`;
 const kpiSold = document.getElementById("kpi-sold");
 const kpiReplenished = document.getElementById("kpi-replenished");
-const kpiMaxSold = document.getElementById("kpi-max-sold");
-const kpiMaxRepl = document.getElementById("kpi-max-repl");
+const kpiRank = document.getElementById("kpi-rank");
+const kpiStock = document.getElementById("kpi-stock");
+const kpiPrice = document.getElementById("kpi-price");
+const kpiWarehouses = document.getElementById("kpi-warehouses");
 
 let lastSeriesParams = null;
 let lastSeriesPayload = null;
@@ -31,7 +40,10 @@ let topItems = [];
 let filteredTopItems = [];
 let selectedTopKey = null;
 let selectedTopIndex = -1;
-let warehouseCounts = new Map();
+let topPage = 1;
+let topPageSize = 30;
+let topTotalPages = 1;
+let topGroupByWarehouse = true;
 
 function setStatus(message, isError = false) {
   uploadStatus.textContent = message;
@@ -163,13 +175,11 @@ function getSelectedWarehouses() {
 }
 
 function logSelectedWarehouses() {
-  if (!DEBUG) return;
-  console.log("selectedWarehouses", getSelectedWarehouses());
-}
-
-function getTopLimit() {
-  const selected = topLimitGroup?.querySelector('input[name="top-limit"]:checked');
-  return selected?.value || "100";
+  const selectedWarehouses = getSelectedWarehouses();
+  if (DEBUG) {
+    console.log("selectedWarehouses", selectedWarehouses);
+  }
+  updateSumWarehouseToggle(selectedWarehouses);
 }
 
 function getSelectedCompany() {
@@ -239,6 +249,55 @@ function formatCurrency(value) {
   return `${value}`;
 }
 
+function updateLatestLoadedBadge(latestDate) {
+  if (!latestLoadedBadge) return;
+  latestLoadedBadge.textContent = `Latest loaded date: ${latestDate || "—"}`;
+}
+
+function updateChartDetails({ item, warehousesLabel }) {
+  if (detailSku) {
+    detailSku.textContent = `SKU: ${item?.canonical_sku ?? "—"}`;
+  }
+  if (detailName) {
+    detailName.textContent = `Name: ${item?.name ?? "—"}`;
+  }
+  if (detailManufacturer) {
+    detailManufacturer.textContent = `Manufacturer: ${item?.manufacturer ?? "—"}`;
+  }
+  if (detailWarehouses) {
+    detailWarehouses.textContent = `Warehouses: ${warehousesLabel || "—"}`;
+  }
+}
+
+function updatePaginationControls(totalCount) {
+  topTotalPages = Math.max(1, Math.ceil(totalCount / topPageSize));
+  if (topPage > topTotalPages) {
+    topPage = topTotalPages;
+  }
+  if (topPageNumberInput) {
+    topPageNumberInput.value = `${Math.min(topPage, topTotalPages)}`;
+    topPageNumberInput.max = `${topTotalPages}`;
+  }
+  if (topPageTotal) {
+    topPageTotal.textContent = `of ${topTotalPages}`;
+  }
+  if (topPagePrevButton) {
+    topPagePrevButton.disabled = topPage <= 1;
+  }
+  if (topPageNextButton) {
+    topPageNextButton.disabled = topPage >= topTotalPages;
+  }
+}
+
+function updateSumWarehouseToggle(warehouses) {
+  if (!sumWarehouseToggle) return;
+  const hasMultiple = (warehouses?.length ?? 0) > 1;
+  sumWarehouseToggle.disabled = !hasMultiple;
+  if (!hasMultiple) {
+    sumWarehouseToggle.checked = false;
+  }
+}
+
 function escapeHtml(value) {
   return `${value}`
     .replaceAll("&", "&amp;")
@@ -259,24 +318,8 @@ function getItemKey(item) {
   return `${itemId}::${warehouse}`;
 }
 
-function buildWarehouseCounts(items) {
-  const counts = new Map();
-  items.forEach((item) => {
-    if (!item?.item_id) return;
-    const warehouse = item?.warehouse ?? "ALL";
-    const entry = counts.get(item.item_id) ?? new Set();
-    entry.add(warehouse);
-    counts.set(item.item_id, entry);
-  });
-  return counts;
-}
-
-function hasMultipleWarehouses(item) {
-  if (!item?.item_id) return false;
-  return (warehouseCounts.get(item.item_id)?.size ?? 0) > 1;
-}
-
 function getWarehouseLabel(item) {
+  if (!topGroupByWarehouse) return "ALL";
   return item?.warehouse ?? "ALL";
 }
 
@@ -288,18 +331,6 @@ function updateSelectionIndex() {
   selectedTopIndex = filteredTopItems.findIndex(
     (item) => getItemKey(item) === selectedTopKey
   );
-}
-
-function updateNavButtons() {
-  if (!topPrevButton || !topNextButton) return;
-  if (filteredTopItems.length === 0) {
-    topPrevButton.disabled = true;
-    topNextButton.disabled = true;
-    return;
-  }
-  topPrevButton.disabled = selectedTopIndex <= 0;
-  topNextButton.disabled =
-    selectedTopIndex < 0 || selectedTopIndex >= filteredTopItems.length - 1;
 }
 
 function scrollToSelectedRow() {
@@ -329,7 +360,6 @@ function applyTopFilter() {
   if (selectedTopIndex >= 0) {
     scrollToSelectedRow();
   }
-  updateNavButtons();
 }
 
 function setSelectedItem(item, options = {}) {
@@ -350,30 +380,12 @@ function setSelectedItem(item, options = {}) {
   if (options.scroll !== false) {
     scrollToSelectedRow();
   }
+  if (chartSection) {
+    chartSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
   if (options.fetch !== false) {
     fetchSeriesForItem(item);
   }
-  updateNavButtons();
-}
-
-function moveSelection(offset) {
-  if (filteredTopItems.length === 0) return;
-  if (selectedTopIndex < 0) {
-    const index = offset > 0 ? 0 : filteredTopItems.length - 1;
-    setSelectedItem(filteredTopItems[index]);
-    return;
-  }
-  const nextIndex = selectedTopIndex + offset;
-  if (nextIndex < 0 || nextIndex >= filteredTopItems.length) return;
-  setSelectedItem(filteredTopItems[nextIndex]);
-}
-
-function jumpToRank(rankValue) {
-  const rank = Number.parseInt(rankValue, 10);
-  if (!Number.isFinite(rank)) return;
-  const target = filteredTopItems.find((item) => Number(item.rank) === rank);
-  if (!target) return;
-  setSelectedItem(target);
 }
 
 function setSeriesEmptyState(availableRange, onShowAvailable) {
@@ -404,41 +416,6 @@ function setSeriesEmptyState(availableRange, onShowAvailable) {
   }
 
   chartEl.append(wrapper);
-}
-
-function ensureDetailedToggle() {
-  const existing = document.getElementById("toggle-detailed");
-  if (existing) return existing;
-
-  const filters = document.querySelector(".filters");
-  if (!filters) return null;
-
-  const label = document.createElement("label");
-  label.className = "inline";
-
-  const span = document.createElement("span");
-  span.textContent = "Detailed by warehouse";
-
-  const checkbox = document.createElement("input");
-  checkbox.type = "checkbox";
-  checkbox.id = "toggle-detailed";
-
-  label.append(span, checkbox);
-
-  const stockLabel = document.querySelector('label.inline input#toggle-stock')?.parentElement;
-  if (stockLabel) {
-    stockLabel.insertAdjacentElement("afterend", label);
-  } else {
-    filters.append(label);
-  }
-
-  checkbox.addEventListener("change", () => {
-    if (lastSeriesPayload) {
-      renderSeries(lastSeriesPayload);
-    }
-  });
-
-  return checkbox;
 }
 
 function buildSeriesByWarehouse(series) {
@@ -484,6 +461,7 @@ function buildWarehouseTimeline(warehouseMap, dates) {
   const stock = [];
   const price = [];
   let lastStock = null;
+  let lastPrice = null;
 
   dates.forEach((date) => {
     const entry = warehouseMap.get(date);
@@ -495,11 +473,14 @@ function buildWarehouseTimeline(warehouseMap, dates) {
     if (stockValue !== null) {
       lastStock = stockValue;
     }
+    if (priceValue !== null) {
+      lastPrice = priceValue;
+    }
 
     sold.push(soldValue);
     replenished.push(replValue);
     stock.push(stockValue !== null ? stockValue : lastStock);
-    price.push(priceValue);
+    price.push(priceValue !== null ? priceValue : lastPrice);
   });
 
   return { sold, replenished, stock, price };
@@ -617,14 +598,25 @@ function renderSeries(payload) {
   const summary = payload?.summary || {};
   const series = Array.isArray(payload?.series) ? payload.series : [];
   lastSeriesPayload = payload;
-  const detailedToggle = ensureDetailedToggle();
 
+  const selectedWarehouses =
+    lastSeriesParams?.warehouses && lastSeriesParams.warehouses.length > 0
+      ? lastSeriesParams.warehouses
+      : getSelectedWarehouses();
+  const warehousesLabel =
+    selectedWarehouses.length > 0 ? selectedWarehouses.join(", ") : "ALL";
+  updateChartDetails({ item: payload?.item, warehousesLabel });
+
+  if (kpiRank) {
+    kpiRank.textContent = formatNumber(summary.rank);
+  }
   kpiSold.textContent = formatNumber(summary.sold_total);
   kpiReplenished.textContent = formatNumber(summary.replenished_total);
-  kpiMaxSold.textContent = formatNumber(summary.rank);
-  kpiMaxRepl.textContent = "—";
 
   if (series.length === 0) {
+    if (kpiStock) kpiStock.textContent = "—";
+    if (kpiPrice) kpiPrice.textContent = "—";
+    if (kpiWarehouses) kpiWarehouses.textContent = "—";
     setSeriesEmptyState(payload?.available_range, (minDate, maxDate) => {
       const dateFromInput = document.getElementById("filter-date-from");
       const dateToInput = document.getElementById("filter-date-to");
@@ -644,7 +636,8 @@ function renderSeries(payload) {
   const { dates, byWarehouse } = buildSeriesByWarehouse(series);
   const warehouses = Array.from(byWarehouse.keys());
   const hasMultipleWarehouses = warehouses.length > 1;
-  const showDetailed = Boolean(detailedToggle?.checked && hasMultipleWarehouses);
+  const sumWarehouses = Boolean(sumWarehouseToggle?.checked && hasMultipleWarehouses);
+  const showPerWarehouse = hasMultipleWarehouses && !sumWarehouses;
   if (DEBUG) {
     console.log("seriesSummary", {
       seriesSize: series.length,
@@ -703,14 +696,13 @@ function renderSeries(payload) {
 
     const legendGroup = `warehouse-${index}`;
     const legendTitle = warehouse ?? "ALL";
-
     const hasStockTrace = stockToggle?.checked && timeline.stock.some((value) => value !== null);
 
-    if (hasStockTrace) {
+    if (showPerWarehouse && hasStockTrace) {
       traces.push({
         x: dates,
         y: timeline.stock,
-        name: hasMultipleWarehouses ? `Остаток — ${warehouse}` : "Остаток",
+        name: `Остаток — ${warehouse}`,
         yaxis: "y",
         type: "scatter",
         mode: "lines",
@@ -720,11 +712,11 @@ function renderSeries(payload) {
         hovertemplate: hoverTemplate,
         legendgroup: legendGroup,
         legendgrouptitle: { text: legendTitle },
-        showlegend: hasMultipleWarehouses,
+        showlegend: true,
       });
     }
 
-    if (!hasStockTrace && hasMultipleWarehouses) {
+    if (showPerWarehouse && !hasStockTrace) {
       traces.push({
         x: [dates[0]],
         y: [null],
@@ -740,137 +732,12 @@ function renderSeries(payload) {
       });
     }
 
-    if (timeline.price.some((value) => value !== null)) {
-      traces.push({
-        x: dates,
-        y: timeline.price,
-        name: hasMultipleWarehouses ? `Цена — ${warehouse}` : "Цена",
-        yaxis: "y3",
-        type: "scatter",
-        mode: "lines",
-        connectgaps: true,
-        line: { color: "#f97316", width: 1 },
-        customdata: customData,
-        hovertemplate: hoverTemplate,
-        legendgroup: legendGroup,
-        showlegend: !hasMultipleWarehouses && !stockToggle?.checked,
-      });
-
-      if (!hasMultipleWarehouses || !isUniformAcrossWarehouses) {
-        const changeMarkers = buildPriceChangeMarkers(timeline.price);
-        traces.push({
-          x: dates,
-          y: changeMarkers.up,
-          name: hasMultipleWarehouses ? `Рост цены — ${warehouse}` : "Рост цены",
-          yaxis: "y3",
-          type: "scatter",
-          mode: "markers",
-          marker: { color: "#16a34a", size: 7, symbol: "triangle-up" },
-          customdata: customData,
-          hovertemplate: hoverTemplate,
-          showlegend: false,
-          legendgroup: legendGroup,
-        });
-        traces.push({
-          x: dates,
-          y: changeMarkers.down,
-          name: hasMultipleWarehouses ? `Снижение цены — ${warehouse}` : "Снижение цены",
-          yaxis: "y3",
-          type: "scatter",
-          mode: "markers",
-          marker: { color: "#dc2626", size: 7, symbol: "triangle-down" },
-          customdata: customData,
-          hovertemplate: hoverTemplate,
-          showlegend: false,
-          legendgroup: legendGroup,
-        });
-      }
-    }
-
-    if (showDetailed) {
-      traces.push({
-        x: dates,
-        y: timeline.sold,
-        name: `Продано — ${warehouse}`,
-        type: "bar",
-        yaxis: "y2",
-        marker: { color: colors[index], opacity: 0.45 },
-        customdata: customData,
-        hovertemplate: hoverTemplate,
-        legendgroup: legendGroup,
-        showlegend: false,
-      });
-
-      traces.push({
-        x: dates,
-        y: timeline.replenished,
-        name: `Пополнено — ${warehouse}`,
-        type: "bar",
-        yaxis: "y2",
-        marker: { color: colors[index], opacity: 0.25 },
-        customdata: customData,
-        hovertemplate: hoverTemplate,
-        legendgroup: legendGroup,
-        showlegend: false,
-      });
-    }
-  });
-
-  if (!showDetailed) {
-    aggregated.price = aggregatedPriceSum.map((sum, index) =>
-      aggregatedPriceCount[index] > 0 ? sum / aggregatedPriceCount[index] : null
-    );
-    const aggregateWarehouse = hasMultipleWarehouses ? "ALL" : warehouses[0] ?? "ALL";
-    const customData = buildHoverCustomData({
-      dates,
-      warehouse: aggregateWarehouse,
-      stock: aggregated.stock,
-      sold: aggregated.sold,
-      replenished: aggregated.replenished,
-      priceDisplay,
-    });
-
-    traces.push({
-      x: dates,
-      y: aggregated.sold,
-      name: "Продано",
-      type: "bar",
-      yaxis: "y2",
-      marker: { color: "#2563eb", opacity: 0.35 },
-      customdata: customData,
-      hovertemplate: hoverTemplate,
-    });
-
-    traces.push({
-      x: dates,
-      y: aggregated.replenished,
-      name: "Пополнено",
-      type: "bar",
-      yaxis: "y2",
-      marker: { color: "#16a34a", opacity: 0.25 },
-      customdata: customData,
-      hovertemplate: hoverTemplate,
-    });
-  }
-
-  if (hasMultipleWarehouses && isUniformAcrossWarehouses) {
-    aggregated.price = aggregatedPriceSum.map((sum, index) =>
-      aggregatedPriceCount[index] > 0 ? sum / aggregatedPriceCount[index] : null
-    );
-    const customData = buildHoverCustomData({
-      dates,
-      warehouse: "ALL",
-      stock: aggregated.stock,
-      sold: aggregated.sold,
-      replenished: aggregated.replenished,
-      priceDisplay,
-    });
-    if (aggregated.price.some((value) => value !== null && value !== undefined)) {
-      const changeMarkers = buildPriceChangeMarkers(aggregated.price);
+    if (showPerWarehouse && timeline.price.some((value) => value !== null)) {
+      const changeMarkers = buildPriceChangeMarkers(timeline.price);
       traces.push({
         x: dates,
         y: changeMarkers.up,
-        name: "Рост цены",
+        name: `Рост цены — ${warehouse}`,
         yaxis: "y3",
         type: "scatter",
         mode: "markers",
@@ -878,11 +745,12 @@ function renderSeries(payload) {
         customdata: customData,
         hovertemplate: hoverTemplate,
         showlegend: false,
+        legendgroup: legendGroup,
       });
       traces.push({
         x: dates,
         y: changeMarkers.down,
-        name: "Снижение цены",
+        name: `Снижение цены — ${warehouse}`,
         yaxis: "y3",
         type: "scatter",
         mode: "markers",
@@ -890,7 +758,116 @@ function renderSeries(payload) {
         customdata: customData,
         hovertemplate: hoverTemplate,
         showlegend: false,
+        legendgroup: legendGroup,
       });
+    }
+  });
+
+  aggregated.price = aggregatedPriceSum.map((sum, index) =>
+    aggregatedPriceCount[index] > 0 ? sum / aggregatedPriceCount[index] : null
+  );
+  const aggregateWarehouse = hasMultipleWarehouses ? "ALL" : warehouses[0] ?? "ALL";
+  const aggregateCustomData = buildHoverCustomData({
+    dates,
+    warehouse: aggregateWarehouse,
+    stock: aggregated.stock,
+    sold: aggregated.sold,
+    replenished: aggregated.replenished,
+    priceDisplay,
+  });
+
+  if (stockToggle?.checked && (!showPerWarehouse || !hasMultipleWarehouses)) {
+    traces.push({
+      x: dates,
+      y: aggregated.stock,
+      name: "Остаток",
+      yaxis: "y",
+      type: "scatter",
+      mode: "lines",
+      connectgaps: true,
+      line: { color: "#2563eb", width: 2 },
+      customdata: aggregateCustomData,
+      hovertemplate: hoverTemplate,
+      showlegend: true,
+    });
+  }
+
+  traces.push({
+    x: dates,
+    y: aggregated.sold,
+    name: "Продано",
+    type: "bar",
+    yaxis: "y2",
+    marker: { color: "#2563eb", opacity: 0.35 },
+    customdata: aggregateCustomData,
+    hovertemplate: hoverTemplate,
+  });
+
+  traces.push({
+    x: dates,
+    y: aggregated.replenished,
+    name: "Пополнено",
+    type: "bar",
+    yaxis: "y2",
+    marker: { color: "#16a34a", opacity: 0.25 },
+    customdata: aggregateCustomData,
+    hovertemplate: hoverTemplate,
+  });
+
+  if (!showPerWarehouse || isUniformAcrossWarehouses) {
+    if (aggregated.price.some((value) => value !== null && value !== undefined)) {
+      const aggregatedMarkers = buildPriceChangeMarkers(aggregated.price);
+      traces.push({
+        x: dates,
+        y: aggregatedMarkers.up,
+        name: "Рост цены",
+        yaxis: "y3",
+        type: "scatter",
+        mode: "markers",
+        marker: { color: "#16a34a", size: 7, symbol: "triangle-up" },
+        customdata: aggregateCustomData,
+        hovertemplate: hoverTemplate,
+        showlegend: false,
+      });
+      traces.push({
+        x: dates,
+        y: aggregatedMarkers.down,
+        name: "Снижение цены",
+        yaxis: "y3",
+        type: "scatter",
+        mode: "markers",
+        marker: { color: "#dc2626", size: 7, symbol: "triangle-down" },
+        customdata: aggregateCustomData,
+        hovertemplate: hoverTemplate,
+        showlegend: false,
+      });
+    }
+  }
+
+  const latestIndex = dates.length - 1;
+  const latestStock = warehouseEntries.reduce((sum, entry) => {
+    const value = entry.timeline.stock[latestIndex];
+    return value !== null && value !== undefined ? sum + value : sum;
+  }, 0);
+  if (kpiStock) {
+    kpiStock.textContent = formatNumber(latestStock);
+  }
+  if (kpiWarehouses) {
+    kpiWarehouses.textContent = warehouses.length > 0 ? warehouses.join(", ") : "—";
+  }
+  if (kpiPrice) {
+    const latestPrices = warehouseEntries
+      .map((entry) => entry.timeline.price[latestIndex])
+      .filter((value) => value !== null && value !== undefined);
+    if (latestPrices.length === 0) {
+      kpiPrice.textContent = "—";
+    } else {
+      const minPrice = Math.min(...latestPrices);
+      const maxPrice = Math.max(...latestPrices);
+      kpiPrice.textContent =
+        minPrice === maxPrice
+          ? formatCurrency(minPrice)
+          : `${formatCurrency(minPrice)} – ${formatCurrency(maxPrice)}`;
     }
   }
 
@@ -924,6 +901,21 @@ function getUploadMode() {
   return mode === "bootstrap" ? "bootstrap" : "reject";
 }
 
+async function fetchLatestLoadedDate() {
+  const params = new URLSearchParams();
+  appendParam(params, "company", getSelectedCompany());
+  const url = buildUrl(`/meta/latest_date?${params.toString()}`);
+  if (DEBUG) {
+    console.log("latestDateUrl", url);
+  }
+  const result = await safeFetch(url);
+  if (!result.ok) {
+    updateLatestLoadedBadge(null);
+    return;
+  }
+  updateLatestLoadedBadge(result.payload?.latest_date || null);
+}
+
 uploadForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const formData = new FormData(uploadForm);
@@ -939,6 +931,7 @@ uploadForm?.addEventListener("submit", async (event) => {
     return;
   }
   setStatus(`Готово. Снимков: ${result.payload.snapshots}, дельт: ${result.payload.deltas}.`);
+  fetchLatestLoadedDate();
 });
 
 async function loadWarehouseOptions() {
@@ -1024,6 +1017,7 @@ async function fetchSeriesWithParams({
   if (!dateFrom || !dateTo) {
     return;
   }
+  updateSumWarehouseToggle(warehouses ?? getSelectedWarehouses());
   const resolvedCompany = company || getSelectedCompany();
   const params = new URLSearchParams();
   appendParam(params, "item_id", itemId);
@@ -1070,32 +1064,19 @@ async function fetchSeriesWithParams({
 }
 
 async function fetchSeries() {
-  const {
-    sku,
-    manufacturer,
-    company,
-    project,
-    warehouses,
-    dateFrom,
-    dateTo,
-  } = collectFilters();
-  await fetchSeriesWithParams({
-    sku,
-    manufacturer,
-    company,
-    project,
-    warehouses,
-    dateFrom,
-    dateTo,
-  });
+  if (selectedTopIndex >= 0 && filteredTopItems[selectedTopIndex]) {
+    await fetchSeriesForItem(filteredTopItems[selectedTopIndex]);
+    return;
+  }
+  if (topItems.length > 0) {
+    setSelectedItem(topItems[0], { scroll: false });
+  }
 }
 
 async function fetchSeriesForItem(item) {
   const { company, warehouses, dateFrom, dateTo } = collectFilters();
   const rowWarehouse =
-    item?.warehouse && item.warehouse !== "ALL" && !hasMultipleWarehouses(item)
-      ? item.warehouse
-      : null;
+    topGroupByWarehouse && item?.warehouse && item.warehouse !== "ALL" ? item.warehouse : null;
   const resolvedWarehouses = rowWarehouse
     ? [rowWarehouse]
     : warehouses.length > 0
@@ -1134,7 +1115,6 @@ function renderTopTable(items) {
         </span>
       </td>
       <td>${getWarehouseLabel(item)}</td>
-      <td>${escapeHtml(item.group_name ?? "—")}</td>
       <td>${formatNumber(item.sold_total)}</td>
       <td>${formatNumber(item.replenished_total)}</td>
       <td>${formatCurrency(item.last_price)}</td>
@@ -1144,7 +1124,6 @@ function renderTopTable(items) {
     });
     topTableBody.append(row);
   });
-  updateNavButtons();
 }
 
 async function fetchTop() {
@@ -1157,11 +1136,12 @@ async function fetchTop() {
     dateFrom,
     dateTo,
   } = collectFilters();
-  const limit = getTopLimit();
 
   if (!dateFrom || !dateTo) {
     return;
   }
+
+  topGroupByWarehouse = warehouses.length <= 1;
 
   const params = new URLSearchParams();
   appendParam(params, "sku", sku);
@@ -1171,7 +1151,9 @@ async function fetchTop() {
   appendParam(params, "warehouses", warehouses);
   appendParam(params, "date_from", dateFrom);
   appendParam(params, "date_to", dateTo);
-  appendParam(params, "limit", limit);
+  appendParam(params, "limit", topPageSize);
+  appendParam(params, "page", topPage);
+  appendParam(params, "group_by_warehouse", topGroupByWarehouse);
   const url = buildUrl(`/top?${params.toString()}`);
   if (DEBUG) {
     console.log("topParams", {
@@ -1182,7 +1164,9 @@ async function fetchTop() {
       warehouses,
       dateFrom,
       dateTo,
-      limit,
+      page: topPage,
+      pageSize: topPageSize,
+      groupByWarehouse: topGroupByWarehouse,
     });
     console.log("topUrl", url);
   }
@@ -1191,21 +1175,28 @@ async function fetchTop() {
     renderTopTable([]);
     return;
   }
-  const items = Array.isArray(result.payload) ? result.payload : result.payload.items || [];
+  const payload = result.payload || {};
+  const items = Array.isArray(payload) ? payload : payload.items || [];
+  const totalCount = payload.total ?? items.length;
   if (DEBUG) {
-    console.log("topResponseSize", { rows: items.length });
+    console.log("topResponseSize", { rows: items.length, total: totalCount });
   }
   topItems = items;
-  warehouseCounts = buildWarehouseCounts(items);
   applyTopFilter();
-  if (selectedTopIndex >= 0) {
+  updatePaginationControls(totalCount);
+  if (selectedTopIndex >= 0 && filteredTopItems[selectedTopIndex]) {
     fetchSeriesForItem(filteredTopItems[selectedTopIndex]);
+  } else if (filteredTopItems.length > 0) {
+    setSelectedItem(filteredTopItems[0], { scroll: false });
   }
 }
 
 applyFilters?.addEventListener("click", (event) => {
   event.preventDefault();
-  fetchSeries();
+  if (DEBUG) {
+    console.log("filtersApplied", collectFilters());
+  }
+  topPage = 1;
   fetchTop();
 });
 
@@ -1213,30 +1204,37 @@ datePreset?.addEventListener("change", (event) => {
   applyDatePreset(event.target.value);
 });
 
-topLimitGroup?.addEventListener("change", () => {
-  fetchTop();
-});
-
 topSearchInput?.addEventListener("input", () => {
   applyTopFilter();
 });
 
-topPrevButton?.addEventListener("click", () => {
-  moveSelection(-1);
-});
-
-topNextButton?.addEventListener("click", () => {
-  moveSelection(1);
-});
-
-topJumpButton?.addEventListener("click", () => {
-  jumpToRank(topJumpInput?.value || "");
-});
-
-topJumpInput?.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    jumpToRank(topJumpInput?.value || "");
+topPagePrevButton?.addEventListener("click", () => {
+  if (topPage > 1) {
+    topPage -= 1;
+    fetchTop();
   }
+});
+
+topPageNextButton?.addEventListener("click", () => {
+  if (topPage < topTotalPages) {
+    topPage += 1;
+    fetchTop();
+  }
+});
+
+topPageNumberInput?.addEventListener("change", () => {
+  const nextPage = Number.parseInt(topPageNumberInput.value, 10);
+  if (!Number.isFinite(nextPage)) return;
+  topPage = Math.min(Math.max(nextPage, 1), topTotalPages);
+  fetchTop();
+});
+
+topPageSizeSelect?.addEventListener("change", () => {
+  const nextSize = Number.parseInt(topPageSizeSelect.value, 10);
+  if (!Number.isFinite(nextSize)) return;
+  topPageSize = nextSize;
+  topPage = 1;
+  fetchTop();
 });
 
 stockToggle?.addEventListener("change", () => {
@@ -1247,12 +1245,19 @@ stockToggle?.addEventListener("change", () => {
   }
 });
 
+sumWarehouseToggle?.addEventListener("change", () => {
+  if (lastSeriesPayload) {
+    renderSeries(lastSeriesPayload);
+  }
+});
+
 companySwitcher?.addEventListener("change", () => {
   loadWarehouseOptions();
-  fetchSeries();
+  topPage = 1;
   fetchTop();
+  fetchLatestLoadedDate();
 });
 
 loadWarehouseOptions();
 initWarehouseActions();
-ensureDetailedToggle();
+fetchLatestLoadedDate();

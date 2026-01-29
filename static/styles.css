@@ -9,62 +9,35 @@ body {
 }
 
 .container {
-  max-width: 1100px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: 32px;
-  display: grid;
-  grid-template-columns: minmax(0, 2.1fr) minmax(0, 1fr);
-  grid-template-areas:
-    "header header"
-    "company company"
-    "errors errors"
-    "upload upload"
-    "filters filters"
-    "table chart"
-    "table kpi";
-  gap: 24px;
+  display: block;
 }
 
-.container > header {
-  grid-area: header;
-}
-
-.container > section:nth-of-type(1) {
-  grid-area: company;
-}
-
-.container > section:nth-of-type(2) {
-  grid-area: errors;
-}
-
-.container > section:nth-of-type(3) {
-  grid-area: upload;
-}
-
-.container > section:nth-of-type(4) {
-  grid-area: filters;
-}
-
-.container > section:nth-of-type(5) {
-  grid-area: chart;
-  position: sticky;
-  top: 1rem;
-  align-self: start;
-}
-
-.container > section:nth-of-type(6) {
-  grid-area: table;
-}
-
-.container > section:nth-of-type(7) {
-  grid-area: kpi;
-  position: sticky;
-  top: 1rem;
-  align-self: start;
+.container > header,
+.container > section {
+  width: 100%;
+  margin-bottom: 24px;
 }
 
 header h1 {
   margin-bottom: 8px;
+}
+
+.meta-row {
+  margin-top: 12px;
+}
+
+.meta-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #1d4ed8;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .card {
@@ -72,6 +45,8 @@ header h1 {
   padding: 20px 24px;
   border-radius: 12px;
   box-shadow: 0 6px 20px rgba(16, 24, 40, 0.08);
+  width: 100%;
+  box-sizing: border-box;
 }
 
 form,
@@ -133,9 +108,24 @@ button:hover {
   white-space: pre-wrap;
 }
 
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 240px;
+  padding: 24px;
+  text-align: center;
+  color: #475467;
+  font-size: 14px;
+}
+
+.empty-state button {
+  margin-top: 12px;
+}
+
 .chart {
   width: 100%;
-  min-height: 360px;
+  min-height: 420px;
 }
 
 .hint {
@@ -222,7 +212,7 @@ button:hover {
 }
 
 .table-wrap {
-  height: 65vh;
+  max-height: 55vh;
   overflow: auto;
 }
 
@@ -247,6 +237,18 @@ button:hover {
 .top-nav {
   display: flex;
   gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.top-nav .inline {
+  align-items: center;
+  gap: 8px;
+}
+
+.page-total {
+  font-size: 13px;
+  color: #475467;
 }
 
 .data-table {
@@ -308,4 +310,27 @@ button:hover {
   display: block;
   font-size: 20px;
   margin-top: 6px;
+}
+
+.chart-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.chart-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: #475467;
+}
+
+.chart-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }

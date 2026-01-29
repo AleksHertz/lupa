@@ -12,6 +12,9 @@
     <header>
       <h1>Ежедневный анализ автотоваров</h1>
       <p>Загрузите свежий Excel и сравните остатки с предыдущим днём.</p>
+      <div class="meta-row">
+        <span class="meta-badge" id="latest-loaded-date">Последняя загруженная дата: —</span>
+      </div>
     </header>
 
     <section class="card">
@@ -58,7 +61,7 @@
       <div class="filters">
         <label>
           Проект
-          <input type="text" id="filter-project" placeholder="Project" />
+          <input type="text" id="filter-project" placeholder="Проект" />
         </label>
         <label>
           Период
@@ -81,78 +84,62 @@
         </label>
         <label>
           Артикул
-          <input type="text" id="filter-sku" placeholder="SKU" />
+          <input type="text" id="filter-sku" placeholder="Артикул" />
         </label>
         <label>
           Производитель
-          <input type="text" id="filter-manufacturer" placeholder="Manufacturer" />
+          <input type="text" id="filter-manufacturer" placeholder="Производитель" />
         </label>
         <label>
-          Дата с
+          С
           <input type="date" id="filter-date-from" />
         </label>
         <label>
-          Дата по
+          По
           <input type="date" id="filter-date-to" />
         </label>
-        <label class="inline">
-          <span>Показывать остаток (stock qty)</span>
-          <input type="checkbox" id="toggle-stock" />
-        </label>
-        <button id="apply-filters">Показать</button>
+        <button id="apply-filters">Применить</button>
       </div>
-    </section>
-
-    <section class="card">
-      <h2>Динамика продаж и пополнений</h2>
-      <div id="chart" class="chart"></div>
     </section>
 
     <section class="card">
       <div class="card-header">
         <h2>Топ по продажам</h2>
-        <div class="toggle-group" id="top-limit">
-          <label>
-            <input type="radio" name="top-limit" value="100" checked />
-            Top 100
-          </label>
-          <label>
-            <input type="radio" name="top-limit" value="500" />
-            Top 500
-          </label>
-          <label>
-            <input type="radio" name="top-limit" value="2000" />
-            Top 2000
-          </label>
-        </div>
       </div>
       <div class="top-controls">
         <label class="inline">
-          <span>Search</span>
-          <input type="search" id="top-search" placeholder="SKU or name" />
+          <span>Поиск</span>
+          <input type="search" id="top-search" placeholder="Артикул или наименование" />
+        </label>
+        <label class="inline">
+          <span>Размер страницы</span>
+          <select id="top-page-size">
+            <option value="30" selected>30</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
         </label>
         <div class="top-nav">
-          <button type="button" id="top-prev">Prev</button>
-          <button type="button" id="top-next">Next</button>
+          <button type="button" id="top-page-prev">Назад</button>
+          <label class="inline">
+            <span>Страница</span>
+            <input type="number" id="top-page-number" min="1" value="1" />
+          </label>
+          <span class="page-total" id="top-page-total">из 1</span>
+          <button type="button" id="top-page-next">Вперёд</button>
         </div>
-        <label class="inline">
-          <span>Jump to rank</span>
-          <input type="number" id="top-jump-rank" min="1" />
-        </label>
-        <button type="button" id="top-jump-btn">Go</button>
       </div>
       <div class="table-wrap">
         <table class="data-table">
           <thead>
             <tr>
-              <th>Rank</th>
-              <th>SKU</th>
-              <th>Name</th>
-              <th>Warehouse</th>
-              <th>Group</th>
-              <th>Sold total</th>
-              <th>Replenished total</th>
-              <th>Last price</th>
+              <th>Ранг</th>
+              <th>Артикул</th>
+              <th>Наименование</th>
+              <th>Склад</th>
+              <th>Продано</th>
+              <th>Пополнено</th>
+              <th>Последняя цена</th>
             </tr>
           </thead>
           <tbody id="top-table-body"></tbody>
@@ -160,30 +147,67 @@
       </div>
     </section>
 
+    <section class="card" id="chart-section">
+      <div class="chart-header">
+        <div>
+          <h2>Динамика продаж и пополнений</h2>
+          <div class="chart-details" id="chart-details">
+            <span id="detail-sku">Артикул: —</span>
+            <span id="detail-name">Наименование: —</span>
+            <span id="detail-manufacturer">Производитель: —</span>
+            <span id="detail-warehouses">Склады: —</span>
+          </div>
+        </div>
+        <div class="chart-toggles">
+          <label class="inline">
+            <span>Показывать остаток</span>
+            <input type="checkbox" id="toggle-stock" />
+          </label>
+          <label class="inline">
+            <span>Сумма по складам</span>
+            <input type="checkbox" id="toggle-sum-warehouses" />
+          </label>
+        </div>
+      </div>
+      <div id="chart" class="chart"></div>
+    </section>
+
     <section class="card">
       <h2>KPI за период</h2>
       <div class="kpi-grid">
         <div class="kpi">
-          <span>Всего продано</span>
+          <span>Ранг</span>
+          <strong id="kpi-rank">—</strong>
+        </div>
+        <div class="kpi">
+          <span>Продано за период</span>
           <strong id="kpi-sold">—</strong>
         </div>
         <div class="kpi">
-          <span>Всего пополнено</span>
+          <span>Пополнено за период</span>
           <strong id="kpi-replenished">—</strong>
         </div>
         <div class="kpi">
-          <span>Макс. всплеск продаж</span>
-          <strong id="kpi-max-sold">—</strong>
+          <span>Текущий остаток</span>
+          <strong id="kpi-stock">—</strong>
         </div>
         <div class="kpi">
-          <span>Макс. всплеск пополнений</span>
-          <strong id="kpi-max-repl">—</strong>
+          <span>Последняя цена</span>
+          <strong id="kpi-price">—</strong>
+        </div>
+        <div class="kpi">
+          <span>Активные склады</span>
+          <strong id="kpi-warehouses">—</strong>
+        </div>
+        <div class="kpi">
+          <span>Последняя загруженная дата</span>
+          <strong id="kpi-latest-date">—</strong>
         </div>
       </div>
     </section>
 
     <section class="card">
-      <h2>Signals</h2>
+      <h2>Сигналы</h2>
       <p>Скоро: сравнение компаний, алерты о всплесках продаж и изменении цены</p>
     </section>
   </main>

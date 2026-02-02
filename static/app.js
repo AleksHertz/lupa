@@ -52,6 +52,7 @@ let topPage = 1;
 let topPageSize = 30;
 let topTotalPages = 1;
 let topGroupByWarehouse = true;
+let latestLoadedLogged = false;
 
 function setStatus(message, isError = false) {
   uploadStatus.textContent = message;
@@ -176,7 +177,8 @@ function fmtDateRu(iso) {
   if (iso instanceof Date) {
     return formatDate(iso).split("-").reverse().join(".");
   }
-  const parts = `${iso}`.split("-");
+  const normalized = `${iso}`.split("T")[0];
+  const parts = normalized.split("-");
   if (parts.length !== 3) return `${iso}`;
   const [year, month, day] = parts;
   if (!year || !month || !day) return `${iso}`;
@@ -291,6 +293,10 @@ function updateLatestLoadedBadge(latestDate) {
   if (!latestLoadedBadge) return;
   const formattedDate = latestDate ? fmtDateRu(latestDate) : "—";
   latestLoadedBadge.textContent = `Последняя загруженная дата: ${formattedDate}`;
+  if (DEBUG && !latestLoadedLogged && latestDate) {
+    console.log("latestLoadedDateFormatted", { latestDate, formattedDate });
+    latestLoadedLogged = true;
+  }
   if (kpiLatestDate) {
     kpiLatestDate.textContent = formattedDate;
   }
@@ -1161,7 +1167,7 @@ async function fetchTop() {
   }
   const payload = result.payload || {};
   const items = Array.isArray(payload) ? payload : payload.items || [];
-  const totalCount = payload.total ?? items.length;
+  const totalCount = payload.total_count ?? payload.total ?? items.length;
   if (DEBUG) {
     console.log("topResponseSize", { rows: items.length, total: totalCount });
   }

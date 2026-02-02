@@ -53,6 +53,17 @@ def _normalize_blank(value: str | None) -> str | None:
     return stripped or None
 
 
+def _parse_bool(value: str | None, default: bool = False) -> bool:
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "y", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "n", "off", ""}:
+        return False
+    return default
+
+
 def _normalize_query_string(query_string: bytes) -> bytes:
     if not query_string:
         return query_string
@@ -299,16 +310,15 @@ def filter_suggestions(
 
 @app.get("/top")
 def top_sales(
+    request: Request,
     limit: int = Query(100, ge=1, le=2000),
     page: int = Query(1, ge=1),
     offset: int | None = Query(default=None, ge=0),
     company: str | None = Query(default="alliance"),
-    warehouses: list[str] | None = Query(default=None, alias="warehouses"),
     sku: str | None = Query(default=None),
     manufacturer: str | None = Query(default=None),
     name: str | None = Query(default=None),
     project_label: str | None = Query(default=None, alias="project"),
-    group_by_warehouse: bool = Query(default=True),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     session: Session = Depends(get_session),
@@ -328,7 +338,14 @@ def top_sales(
                 detail=f"{label} must be in YYYY-MM-DD format",
             ) from exc
 
-    warehouses = _normalize_csv_list(warehouses)
+    warehouses_raw = request.query_params.get("warehouses")
+    warehouses = (
+        [value.strip() for value in warehouses_raw.split(",") if value.strip()]
+        if warehouses_raw
+        else None
+    )
+    group_by_raw = request.query_params.get("group_by_warehouse")
+    group_by_warehouse = _parse_bool(group_by_raw, default=False)
     sku = _normalize_blank(sku)
     manufacturer = _normalize_blank(manufacturer)
     project_label = _normalize_blank(project_label)
@@ -348,38 +365,57 @@ def top_sales(
             "date_to": date_to.isoformat() if date_to else None,
             "warehouses": warehouses,
             "limit": limit,
+            "page": page,
+            "offset": resolved_offset,
             "manufacturer": manufacturer,
             "sku": sku,
             "name": name,
-            "page": page,
-            "offset": resolved_offset,
             "project": project_label,
             "group_by_warehouse": group_by_warehouse,
         },
     )
-    payload = get_top_sales(
-        session=session,
-        limit=limit,
-        offset=resolved_offset,
-        company=company_norm,
-        warehouses=warehouses,
-        sku=sku,
-        manufacturer=manufacturer,
-        name=name,
-        project=project_label,
-        group_by_warehouse=group_by_warehouse,
-        date_from=date_from,
-        date_to=date_to,
-    )
+    try:
+        payload = get_top_sales(
+            session=session,
+            limit=limit,
+            offset=resolved_offset,
+            company=company_norm,
+            warehouses=warehouses,
+            sku=sku,
+            manufacturer=manufacturer,
+            name=name,
+            project=project_label,
+            group_by_warehouse=group_by_warehouse,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except Exception:
+        logger.exception(
+            "Top sales query failed",
+            extra={
+                "company_norm": company_norm,
+                "date_from": date_from.isoformat() if date_from else None,
+                "date_to": date_to.isoformat() if date_to else None,
+                "warehouses": warehouses,
+                "limit": limit,
+                "page": page,
+                "offset": resolved_offset,
+                "group_by_warehouse": group_by_warehouse,
+            },
+        )
+        raise
     logger.info(
         "Top results",
-        extra={"rows_count": len(payload.get("items", [])), "total_count": payload.get("total")},
+        extra={
+            "rows_count": len(payload.get("items", [])),
+            "total_count": payload.get("total_count"),
+        },
     )
     return {
         "items": payload.get("items", []),
-        "total": payload.get("total", 0),
+        "total_count": payload.get("total_count", 0),
         "page": page,
-        "page_size": limit,
+        "limit": limit,
     }
 
 

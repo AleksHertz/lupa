@@ -112,6 +112,32 @@ def _normalize_company(company: str | None, default: str | None = "alliance") ->
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+RESERVED_LOG_KEYS = {
+    "name",
+    "msg",
+    "args",
+    "levelname",
+    "levelno",
+    "pathname",
+    "filename",
+    "module",
+    "exc_info",
+    "exc_text",
+    "stack_info",
+    "lineno",
+    "funcName",
+    "created",
+    "msecs",
+    "relativeCreated",
+    "thread",
+    "threadName",
+    "processName",
+    "process",
+}
+
+
+def safe_extra(extra: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in extra.items() if key not in RESERVED_LOG_KEYS}
 
 app = FastAPI(title="Stock Delta Analyzer")
 app.add_middleware(
@@ -359,20 +385,22 @@ def top_sales(
     resolved_offset = offset if offset is not None else (page - 1) * limit
     logger.info(
         "Top params",
-        extra={
-            "company_norm": company_norm,
-            "date_from": date_from.isoformat() if date_from else None,
-            "date_to": date_to.isoformat() if date_to else None,
-            "warehouses": warehouses,
-            "limit": limit,
-            "page": page,
-            "offset": resolved_offset,
-            "manufacturer": manufacturer,
-            "sku": sku,
-            "name": name,
-            "project": project_label,
-            "group_by_warehouse": group_by_warehouse,
-        },
+        extra=safe_extra(
+            {
+                "company_norm": company_norm,
+                "date_from": date_from.isoformat() if date_from else None,
+                "date_to": date_to.isoformat() if date_to else None,
+                "warehouses": warehouses,
+                "limit": limit,
+                "page": page,
+                "offset": resolved_offset,
+                "manufacturer": manufacturer,
+                "sku": sku,
+                "item_name": name,
+                "project": project_label,
+                "group_by_warehouse": group_by_warehouse,
+            }
+        ),
     )
     try:
         payload = get_top_sales(
@@ -392,24 +420,28 @@ def top_sales(
     except Exception:
         logger.exception(
             "Top sales query failed",
-            extra={
-                "company_norm": company_norm,
-                "date_from": date_from.isoformat() if date_from else None,
-                "date_to": date_to.isoformat() if date_to else None,
-                "warehouses": warehouses,
-                "limit": limit,
-                "page": page,
-                "offset": resolved_offset,
-                "group_by_warehouse": group_by_warehouse,
-            },
+            extra=safe_extra(
+                {
+                    "company_norm": company_norm,
+                    "date_from": date_from.isoformat() if date_from else None,
+                    "date_to": date_to.isoformat() if date_to else None,
+                    "warehouses": warehouses,
+                    "limit": limit,
+                    "page": page,
+                    "offset": resolved_offset,
+                    "group_by_warehouse": group_by_warehouse,
+                }
+            ),
         )
         raise
     logger.info(
         "Top results",
-        extra={
-            "rows_count": len(payload.get("items", [])),
-            "total_count": payload.get("total_count"),
-        },
+        extra=safe_extra(
+            {
+                "rows_count": len(payload.get("items", [])),
+                "total_count": payload.get("total_count"),
+            }
+        ),
     )
     return {
         "items": payload.get("items", []),
@@ -435,7 +467,10 @@ def latest_loaded_date(
 ):
     company_norm = _normalize_company(_normalize_blank(company))
     latest_date = get_latest_loaded_date(session=session, company=company_norm)
-    logger.info("Latest loaded date", extra={"company": company_norm, "latest_date": latest_date})
+    logger.info(
+        "Latest loaded date",
+        extra=safe_extra({"company": company_norm, "latest_date": latest_date}),
+    )
     return {"latest_date": latest_date}
 
 

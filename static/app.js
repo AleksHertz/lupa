@@ -52,6 +52,7 @@ let topPage = 1;
 let topPageSize = 30;
 let topTotalPages = 1;
 let topGroupByWarehouse = true;
+let latestLoadedLogged = false;
 
 function setStatus(message, isError = false) {
   uploadStatus.textContent = message;
@@ -292,6 +293,10 @@ function updateLatestLoadedBadge(latestDate) {
   if (!latestLoadedBadge) return;
   const formattedDate = latestDate ? fmtDateRu(latestDate) : "—";
   latestLoadedBadge.textContent = `Последняя загруженная дата: ${formattedDate}`;
+  if (DEBUG && !latestLoadedLogged && latestDate) {
+    console.log("latestLoadedDateFormatted", { latestDate, formattedDate });
+    latestLoadedLogged = true;
+  }
   if (kpiLatestDate) {
     kpiLatestDate.textContent = formattedDate;
   }

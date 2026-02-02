@@ -176,7 +176,8 @@ function fmtDateRu(iso) {
   if (iso instanceof Date) {
     return formatDate(iso).split("-").reverse().join(".");
   }
-  const parts = `${iso}`.split("-");
+  const normalized = `${iso}`.split("T")[0];
+  const parts = normalized.split("-");
   if (parts.length !== 3) return `${iso}`;
   const [year, month, day] = parts;
   if (!year || !month || !day) return `${iso}`;
@@ -1161,7 +1162,7 @@ async function fetchTop() {
   }
   const payload = result.payload || {};
   const items = Array.isArray(payload) ? payload : payload.items || [];
-  const totalCount = payload.total ?? items.length;
+  const totalCount = payload.total_count ?? payload.total ?? items.length;
   if (DEBUG) {
     console.log("topResponseSize", { rows: items.length, total: totalCount });
   }

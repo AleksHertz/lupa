@@ -171,6 +171,18 @@ function formatDate(value) {
   return `${year}-${month}-${day}`;
 }
 
+function fmtDateRu(iso) {
+  if (!iso) return "—";
+  if (iso instanceof Date) {
+    return formatDate(iso).split("-").reverse().join(".");
+  }
+  const parts = `${iso}`.split("-");
+  if (parts.length !== 3) return `${iso}`;
+  const [year, month, day] = parts;
+  if (!year || !month || !day) return `${iso}`;
+  return `${day}.${month}.${year}`;
+}
+
 function applyDatePreset(preset) {
   if (!preset) return;
   const today = new Date();
@@ -277,9 +289,10 @@ function formatCurrency(value) {
 
 function updateLatestLoadedBadge(latestDate) {
   if (!latestLoadedBadge) return;
-  latestLoadedBadge.textContent = `Последняя загруженная дата: ${latestDate || "—"}`;
+  const formattedDate = latestDate ? fmtDateRu(latestDate) : "—";
+  latestLoadedBadge.textContent = `Последняя загруженная дата: ${formattedDate}`;
   if (kpiLatestDate) {
-    kpiLatestDate.textContent = latestDate || "—";
+    kpiLatestDate.textContent = formattedDate;
   }
 }
 
@@ -432,7 +445,9 @@ function setSeriesEmptyState(availableRange, onShowAvailable) {
 
   const message = document.createElement("p");
   if (availableRange?.min && availableRange?.max) {
-    message.textContent = `Нет данных за выбранный период. Доступно: ${availableRange.min}..${availableRange.max}`;
+    message.textContent = `Нет данных за выбранный период. Доступно: ${fmtDateRu(
+      availableRange.min
+    )}..${fmtDateRu(availableRange.max)}`;
   } else {
     message.textContent = "Нет данных за выбранный период.";
   }
@@ -543,7 +558,7 @@ function buildHoverCustomData({ dates, warehouse, stock, sold, replenished, pric
     formatNumber(sold[index]),
     formatNumber(replenished[index]),
     formatCurrency(price[index]),
-    date,
+    fmtDateRu(date),
   ]);
 }
 

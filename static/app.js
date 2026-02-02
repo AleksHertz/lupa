@@ -85,8 +85,9 @@ function updateSeriesDebugPanel({ url, status, points }) {
   }
   if (seriesDebugSample) {
     const sample = Array.isArray(points) ? points.slice(0, 3) : [];
+    const formattedSample = sample.map((entry) => formatSeriesEntryForDisplay(entry));
     seriesDebugSample.textContent =
-      sample.length > 0 ? JSON.stringify(sample, null, 2) : "—";
+      formattedSample.length > 0 ? JSON.stringify(formattedSample, null, 2) : "—";
   }
 }
 
@@ -183,6 +184,14 @@ function fmtDateRu(iso) {
   const [year, month, day] = parts;
   if (!year || !month || !day) return `${iso}`;
   return `${day}.${month}.${year}`;
+}
+
+function formatSeriesEntryForDisplay(entry) {
+  if (!entry || typeof entry !== "object") return entry;
+  return {
+    ...entry,
+    date: entry.date ? fmtDateRu(entry.date) : entry.date,
+  };
 }
 
 function applyDatePreset(preset) {
@@ -505,10 +514,10 @@ function normalizeSeriesPoints(points) {
   if (!Array.isArray(points)) return [];
   return points
     .map((entry) => {
-      if (!entry?.date || !entry?.warehouse) return null;
+      if (!entry?.date) return null;
       return {
         date: `${entry.date}`,
-        warehouse: `${entry.warehouse}`,
+        warehouse: entry?.warehouse ? `${entry.warehouse}` : null,
         stock_qty:
           entry.stock_qty === null || entry.stock_qty === undefined
             ? null
@@ -522,12 +531,12 @@ function normalizeSeriesPoints(points) {
     .filter((entry) => entry);
 }
 
-function buildSeriesByWarehouse(points) {
+function buildSeriesByWarehouse(points, fallbackWarehouseLabel) {
   const byWarehouse = new Map();
   const datesSet = new Set();
 
   points.forEach((entry) => {
-    const warehouse = entry.warehouse ?? ALL_WAREHOUSES_LABEL;
+    const warehouse = entry.warehouse ?? fallbackWarehouseLabel ?? ALL_WAREHOUSES_LABEL;
     const date = entry.date;
     datesSet.add(date);
 
@@ -557,9 +566,35 @@ function buildWarehouseTimeline(warehouseMap, dates) {
   return { sold, replenished, stock, price };
 }
 
-function buildHoverCustomData({ dates, warehouse, stock, sold, replenished, price }) {
+function resolveWarehouseLabel({ pointWarehouse, selectedWarehouses, isAggregated }) {
+  const sanitized = Array.isArray(selectedWarehouses)
+    ? selectedWarehouses.map((value) => value.trim()).filter(Boolean)
+    : [];
+  if (pointWarehouse && (pointWarehouse !== ALL_WAREHOUSES_LABEL || sanitized.length !== 1)) {
+    return pointWarehouse;
+  }
+  if (sanitized.length === 1) return sanitized[0];
+  if (isAggregated) return ALL_WAREHOUSES_LABEL;
+  return pointWarehouse ?? ALL_WAREHOUSES_LABEL;
+}
+
+function buildHoverCustomData({
+  dates,
+  warehouse,
+  stock,
+  sold,
+  replenished,
+  price,
+  selectedWarehouses,
+  isAggregated,
+}) {
+  const resolvedWarehouse = resolveWarehouseLabel({
+    pointWarehouse: warehouse,
+    selectedWarehouses,
+    isAggregated,
+  });
   return dates.map((date, index) => [
-    warehouse ?? ALL_WAREHOUSES_LABEL,
+    resolvedWarehouse,
     formatNumber(stock[index]),
     formatNumber(sold[index]),
     formatNumber(replenished[index]),
@@ -577,6 +612,72 @@ function buildHoverTemplate() {
     "Пополнено: %{customdata[3]}<br>" +
     "Цена: %{customdata[4]}<extra></extra>"
   );
+}
+
+function buildPriceChangeHoverTemplate() {
+  return (
+    "Дата: %{customdata[5]}<br>" +
+    "Склад: %{customdata[0]}<br>" +
+    "Остаток: %{customdata[1]}<br>" +
+    "Продано: %{customdata[2]}<br>" +
+    "Пополнено: %{customdata[3]}<br>" +
+    "Цена: %{customdata[4]}<br>" +
+    "Цена изменилась: %{customdata[6]} (с %{customdata[7]})<extra></extra>"
+  );
+}
+
+function collectPriceChangeMarkers({
+  dates,
+  timeline,
+  warehouseLabel,
+  selectedWarehouses,
+  isAggregated,
+}) {
+  const increases = [];
+  const decreases = [];
+  let previousPrice = null;
+
+  for (let i = 0; i < dates.length; i += 1) {
+    const currentPrice = timeline.price[i];
+    if (currentPrice === null || currentPrice === undefined) {
+      continue;
+    }
+    if (previousPrice === null || previousPrice === undefined) {
+      previousPrice = currentPrice;
+      continue;
+    }
+    if (currentPrice === previousPrice) {
+      continue;
+    }
+    const stockValue = timeline.stock[i];
+    if (stockValue === null || stockValue === undefined) {
+      previousPrice = currentPrice;
+      continue;
+    }
+    const direction = currentPrice > previousPrice ? "↑" : "↓";
+    const target = currentPrice > previousPrice ? increases : decreases;
+    const resolvedWarehouse = resolveWarehouseLabel({
+      pointWarehouse: warehouseLabel,
+      selectedWarehouses,
+      isAggregated,
+    });
+    target.push({
+      x: dates[i],
+      y: stockValue,
+      customdata: [
+        resolvedWarehouse,
+        formatNumber(stockValue),
+        formatNumber(timeline.sold[i]),
+        formatNumber(timeline.replenished[i]),
+        formatCurrency(currentPrice),
+        fmtDateRu(dates[i]),
+        direction,
+        formatCurrency(previousPrice),
+      ],
+    });
+    previousPrice = currentPrice;
+  }
+  return { increases, decreases };
 }
 
 function createWarehouseColors(count) {
@@ -666,7 +767,12 @@ function renderSeries(payload) {
     console.debug("series first row", points[0]);
   }
 
-  const { dates, byWarehouse } = buildSeriesByWarehouse(points);
+  const fallbackWarehouseLabel = resolveWarehouseLabel({
+    pointWarehouse: null,
+    selectedWarehouses,
+    isAggregated: true,
+  });
+  const { dates, byWarehouse } = buildSeriesByWarehouse(points, fallbackWarehouseLabel);
   const warehouses = Array.from(byWarehouse.keys());
   const hasMultipleWarehouses = warehouses.length > 1;
   const sumWarehouses = Boolean(sumWarehouseToggle?.checked && hasMultipleWarehouses);
@@ -679,7 +785,12 @@ function renderSeries(payload) {
   }
 
   const hoverTemplate = buildHoverTemplate();
+  const priceChangeHoverTemplate = buildPriceChangeHoverTemplate();
   const traces = [];
+  const priceChangeMarkers = {
+    increases: [],
+    decreases: [],
+  };
   const colors = createWarehouseColors(warehouses.length);
   const aggregated = {
     sold: Array(dates.length).fill(0),
@@ -715,6 +826,8 @@ function renderSeries(payload) {
       sold: timeline.sold,
       replenished: timeline.replenished,
       price: timeline.price,
+      selectedWarehouses,
+      isAggregated: false,
     });
 
     if (showPerWarehouse && stockToggle?.checked) {
@@ -731,6 +844,18 @@ function renderSeries(payload) {
         hovertemplate: hoverTemplate,
       });
     }
+
+    if (showPerWarehouse) {
+      const markers = collectPriceChangeMarkers({
+        dates,
+        timeline,
+        warehouseLabel: warehouse,
+        selectedWarehouses,
+        isAggregated: false,
+      });
+      priceChangeMarkers.increases.push(...markers.increases);
+      priceChangeMarkers.decreases.push(...markers.decreases);
+    }
   });
 
   aggregated.price = aggregatedPriceSum.map((sum, index) =>
@@ -743,6 +868,8 @@ function renderSeries(payload) {
     sold: aggregated.sold,
     replenished: aggregated.replenished,
     price: aggregated.price,
+    selectedWarehouses,
+    isAggregated: true,
   });
 
   if (stockToggle?.checked && (!showPerWarehouse || !hasMultipleWarehouses)) {
@@ -759,6 +886,18 @@ function renderSeries(payload) {
       hovertemplate: hoverTemplate,
       showlegend: true,
     });
+  }
+
+  if (!showPerWarehouse) {
+    const markers = collectPriceChangeMarkers({
+      dates,
+      timeline: aggregated,
+      warehouseLabel: ALL_WAREHOUSES_LABEL,
+      selectedWarehouses,
+      isAggregated: true,
+    });
+    priceChangeMarkers.increases.push(...markers.increases);
+    priceChangeMarkers.decreases.push(...markers.decreases);
   }
 
   traces.push({
@@ -782,6 +921,36 @@ function renderSeries(payload) {
     customdata: aggregateCustomData,
     hovertemplate: hoverTemplate,
   });
+
+  if (priceChangeMarkers.increases.length > 0) {
+    traces.push({
+      x: priceChangeMarkers.increases.map((marker) => marker.x),
+      y: priceChangeMarkers.increases.map((marker) => marker.y),
+      type: "scatter",
+      mode: "markers",
+      yaxis: "y",
+      name: "Изменение цены ↑",
+      marker: { color: "#16a34a", size: 8, symbol: "triangle-up" },
+      customdata: priceChangeMarkers.increases.map((marker) => marker.customdata),
+      hovertemplate: priceChangeHoverTemplate,
+      showlegend: false,
+    });
+  }
+
+  if (priceChangeMarkers.decreases.length > 0) {
+    traces.push({
+      x: priceChangeMarkers.decreases.map((marker) => marker.x),
+      y: priceChangeMarkers.decreases.map((marker) => marker.y),
+      type: "scatter",
+      mode: "markers",
+      yaxis: "y",
+      name: "Изменение цены ↓",
+      marker: { color: "#dc2626", size: 8, symbol: "triangle-down" },
+      customdata: priceChangeMarkers.decreases.map((marker) => marker.customdata),
+      hovertemplate: priceChangeHoverTemplate,
+      showlegend: false,
+    });
+  }
 
   const latestStockEntries = [];
   const latestPriceEntries = [];

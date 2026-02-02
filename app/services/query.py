@@ -526,6 +526,7 @@ def get_top_sales(
     date_from: date | None = None,
     date_to: date | None = None,
 ) -> dict[str, Any]:
+    snapshot_group_by_warehouse = group_by_warehouse
     group_by_columns = [
         Item.id,
         Item.canonical_sku,
@@ -537,12 +538,23 @@ def get_top_sales(
 
     snapshot_select_columns = [
         FactSnapshot.item_id.label("item_id"),
-        FactSnapshot.warehouse.label("warehouse"),
         FactSnapshot.price.label("last_price"),
+        FactSnapshot.data_date.label("data_date"),
     ]
+    snapshot_distinct_columns = [FactSnapshot.item_id]
+    snapshot_order_by_columns = [
+        FactSnapshot.item_id,
+        FactSnapshot.data_date.desc(),
+    ]
+    if snapshot_group_by_warehouse:
+        snapshot_select_columns.insert(
+            1, FactSnapshot.warehouse.label("warehouse")
+        )
+        snapshot_distinct_columns.append(FactSnapshot.warehouse)
+        snapshot_order_by_columns.insert(1, FactSnapshot.warehouse)
     snapshot_stmt = select(*snapshot_select_columns).join(
         Item, Item.id == FactSnapshot.item_id
-    ).distinct(FactSnapshot.item_id, FactSnapshot.warehouse)
+    ).distinct(*snapshot_distinct_columns)
 
     if company:
         snapshot_stmt = snapshot_stmt.where(FactSnapshot.company == company).where(
@@ -569,17 +581,15 @@ def get_top_sales(
     if date_to:
         snapshot_stmt = snapshot_stmt.where(FactSnapshot.data_date <= date_to)
 
-    snapshot_stmt = snapshot_stmt.order_by(
-        FactSnapshot.item_id,
-        FactSnapshot.warehouse,
-        FactSnapshot.data_date.desc(),
-    )
+    snapshot_stmt = snapshot_stmt.order_by(*snapshot_order_by_columns)
 
     snapshot_subq = snapshot_stmt.subquery()
 
-    join_condition = (FactDeltaChange.item_id == snapshot_subq.c.item_id) & (
-        FactDeltaChange.warehouse == snapshot_subq.c.warehouse
-    )
+    join_condition = FactDeltaChange.item_id == snapshot_subq.c.item_id
+    if snapshot_group_by_warehouse:
+        join_condition = join_condition & (
+            FactDeltaChange.warehouse == snapshot_subq.c.warehouse
+        )
     if group_by_warehouse:
         warehouse_column = FactDeltaChange.warehouse
     else:
@@ -587,7 +597,7 @@ def get_top_sales(
 
     sold_total_expr = func.sum(FactDeltaChange.sold_qty)
     replenished_total_expr = func.sum(FactDeltaChange.replenished_qty)
-    stmt = (
+    base_stmt = (
         select(
             Item.id.label("item_id"),
             Item.canonical_sku.label("canonical_sku"),
@@ -596,69 +606,61 @@ def get_top_sales(
             warehouse_column.label("warehouse"),
             sold_total_expr.label("sold_total"),
             replenished_total_expr.label("replenished_total"),
-            func.max(snapshot_subq.c.last_price).label("last_price"),
-            func.dense_rank()
-            .over(order_by=sold_total_expr.desc())
-            .label("rank"),
+            snapshot_subq.c.last_price.label("last_price"),
         )
+        .select_from(FactDeltaChange)
         .join(Item, Item.id == FactDeltaChange.item_id)
         .outerjoin(snapshot_subq, join_condition)
-        .group_by(*group_by_columns)
-        .order_by(sold_total_expr.desc())
+        .group_by(*group_by_columns, snapshot_subq.c.last_price)
+    )
+
+    if company:
+        base_stmt = base_stmt.where(FactDeltaChange.company == company).where(
+            Item.company == company
+        )
+    if warehouses:
+        base_stmt = base_stmt.where(FactDeltaChange.warehouse.in_(warehouses))
+    if sku:
+        sku_filter = or_(
+            Item.canonical_sku == sku,
+            Item.sku_norm.ilike(f"%{sku}%"),
+        )
+        base_stmt = base_stmt.where(sku_filter)
+    if manufacturer:
+        base_stmt = base_stmt.where(Item.manufacturer_norm.ilike(f"%{manufacturer}%"))
+    if name:
+        base_stmt = base_stmt.where(Item.name.ilike(f"%{name}%"))
+    if project:
+        base_stmt = base_stmt.where(Item.project_label == project)
+    if date_from:
+        base_stmt = base_stmt.where(FactDeltaChange.data_date >= date_from)
+    if date_to:
+        base_stmt = base_stmt.where(FactDeltaChange.data_date <= date_to)
+
+    base_subq = base_stmt.subquery()
+    data_stmt = (
+        select(
+            base_subq.c.item_id,
+            base_subq.c.canonical_sku,
+            base_subq.c.name,
+            base_subq.c.group_name,
+            base_subq.c.warehouse,
+            base_subq.c.sold_total,
+            base_subq.c.replenished_total,
+            base_subq.c.last_price,
+            func.dense_rank()
+            .over(order_by=base_subq.c.sold_total.desc())
+            .label("rank"),
+        )
+        .order_by(base_subq.c.sold_total.desc())
         .limit(limit)
         .offset(offset)
     )
 
-    if company:
-        stmt = stmt.where(FactDeltaChange.company == company).where(Item.company == company)
-    if warehouses:
-        stmt = stmt.where(FactDeltaChange.warehouse.in_(warehouses))
-    if sku:
-        sku_filter = or_(
-            Item.canonical_sku == sku,
-            Item.sku_norm.ilike(f"%{sku}%"),
-        )
-        stmt = stmt.where(sku_filter)
-    if manufacturer:
-        stmt = stmt.where(Item.manufacturer_norm.ilike(f"%{manufacturer}%"))
-    if name:
-        stmt = stmt.where(Item.name.ilike(f"%{name}%"))
-    if project:
-        stmt = stmt.where(Item.project_label == project)
-    if date_from:
-        stmt = stmt.where(FactDeltaChange.data_date >= date_from)
-    if date_to:
-        stmt = stmt.where(FactDeltaChange.data_date <= date_to)
+    count_q = select(func.count()).select_from(base_subq)
+    total_count = session.execute(count_q).scalar_one() or 0
 
-    count_stmt = select(*group_by_columns).join(Item, Item.id == FactDeltaChange.item_id)
-
-    if company:
-        count_stmt = count_stmt.where(FactDeltaChange.company == company).where(
-            Item.company == company
-        )
-    if warehouses:
-        count_stmt = count_stmt.where(FactDeltaChange.warehouse.in_(warehouses))
-    if sku:
-        sku_filter = or_(
-            Item.canonical_sku == sku,
-            Item.sku_norm.ilike(f"%{sku}%"),
-        )
-        count_stmt = count_stmt.where(sku_filter)
-    if manufacturer:
-        count_stmt = count_stmt.where(Item.manufacturer_norm.ilike(f"%{manufacturer}%"))
-    if name:
-        count_stmt = count_stmt.where(Item.name.ilike(f"%{name}%"))
-    if project:
-        count_stmt = count_stmt.where(Item.project_label == project)
-    if date_from:
-        count_stmt = count_stmt.where(FactDeltaChange.data_date >= date_from)
-    if date_to:
-        count_stmt = count_stmt.where(FactDeltaChange.data_date <= date_to)
-
-    count_stmt = count_stmt.group_by(*group_by_columns).subquery()
-    total_count = session.execute(select(func.count()).select_from(count_stmt)).scalar() or 0
-
-    rows = session.execute(stmt).mappings().all()
+    rows = session.execute(data_stmt).mappings().all()
     logger.info(
         "Top sales result summary",
         extra={"rows_count": len(rows), "total_count": total_count},

@@ -348,9 +348,12 @@ def top_sales(
             "date_to": date_to.isoformat() if date_to else None,
             "warehouses": warehouses,
             "limit": limit,
+            "manufacturer": manufacturer,
             "sku": sku,
+            "name": name,
             "page": page,
             "offset": resolved_offset,
+            "project": project_label,
             "group_by_warehouse": group_by_warehouse,
         },
     )

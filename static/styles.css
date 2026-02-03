@@ -120,6 +120,29 @@ button:hover {
   background: #1e40af;
 }
 
+.preset-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.preset-buttons button {
+  background: #f2f4f7;
+  color: #344054;
+  border: 1px solid #d0d5dd;
+}
+
+.preset-buttons button:hover {
+  background: #e4e7ec;
+}
+
+.preset-buttons button.is-active {
+  background: #1d4ed8;
+  color: #fff;
+  border-color: #1d4ed8;
+}
+
 .status {
   margin-top: 12px;
   font-size: 14px;

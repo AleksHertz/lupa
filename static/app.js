@@ -6,6 +6,10 @@ const applyFilters = document.getElementById("apply-filters");
 const warehouseList = document.getElementById("filter-warehouse");
 const warehouseSelectAllButton = document.getElementById("warehouse-select-all");
 const warehouseClearButton = document.getElementById("warehouse-clear");
+const projectInput = document.getElementById("filter-project");
+const projectPresetKorea = document.getElementById("project-preset-korea");
+const projectPresetChina = document.getElementById("project-preset-china");
+const projectPresetReset = document.getElementById("project-preset-reset");
 const topTableBody = document.getElementById("top-table-body");
 const topSearchInput = document.getElementById("top-search");
 const topPagePrevButton = document.getElementById("top-page-prev");
@@ -53,6 +57,7 @@ let topPageSize = 30;
 let topTotalPages = 1;
 let topGroupByWarehouse = true;
 let latestLoadedLogged = false;
+let currentProjectPreset = null;
 
 function setStatus(message, isError = false) {
   uploadStatus.textContent = message;
@@ -258,7 +263,7 @@ function collectFilters() {
   const sku = document.getElementById("filter-sku").value || "";
   const manufacturer = document.getElementById("filter-manufacturer").value || "";
   const company = getSelectedCompany();
-  const project = document.getElementById("filter-project")?.value || "";
+  const project = projectInput?.value || "";
   const dateFrom = document.getElementById("filter-date-from").value;
   const dateTo = document.getElementById("filter-date-to").value;
   const warehouses = getSelectedWarehouses();
@@ -268,10 +273,40 @@ function collectFilters() {
     manufacturer,
     company,
     project,
+    projectPreset: currentProjectPreset,
     warehouses,
     dateFrom,
     dateTo,
   };
+}
+
+function updateProjectPresetButtons() {
+  if (projectPresetKorea) {
+    const isActive = currentProjectPreset === "korea";
+    projectPresetKorea.classList.toggle("is-active", isActive);
+    projectPresetKorea.setAttribute("aria-pressed", isActive ? "true" : "false");
+  }
+  if (projectPresetChina) {
+    const isActive = currentProjectPreset === "china";
+    projectPresetChina.classList.toggle("is-active", isActive);
+    projectPresetChina.setAttribute("aria-pressed", isActive ? "true" : "false");
+  }
+}
+
+function setProjectPreset(preset) {
+  currentProjectPreset = preset;
+  if (projectInput) {
+    projectInput.value = "";
+  }
+  updateProjectPresetButtons();
+}
+
+function clearProjectPreset({ clearProjectInput = false } = {}) {
+  currentProjectPreset = null;
+  if (clearProjectInput && projectInput) {
+    projectInput.value = "";
+  }
+  updateProjectPresetButtons();
 }
 
 function formatNumber(value) {
@@ -1116,6 +1151,32 @@ function setAllWarehousesSelected(isSelected) {
   });
 }
 
+function initProjectPresets() {
+  if (projectPresetKorea) {
+    projectPresetKorea.addEventListener("click", () => {
+      setProjectPreset("korea");
+    });
+  }
+  if (projectPresetChina) {
+    projectPresetChina.addEventListener("click", () => {
+      setProjectPreset("china");
+    });
+  }
+  if (projectPresetReset) {
+    projectPresetReset.addEventListener("click", () => {
+      clearProjectPreset({ clearProjectInput: true });
+    });
+  }
+  if (projectInput) {
+    projectInput.addEventListener("input", () => {
+      if (projectInput.value && currentProjectPreset) {
+        clearProjectPreset();
+      }
+    });
+  }
+  updateProjectPresetButtons();
+}
+
 function initWarehouseActions() {
   if (!warehouseList) return;
   if (warehouseSelectAllButton) {
@@ -1138,6 +1199,7 @@ async function fetchSeriesWithParams({
   warehouses,
   dateFrom,
   dateTo,
+  projectPreset,
 }) {
   if (!dateFrom || !dateTo) {
     return;
@@ -1151,6 +1213,7 @@ async function fetchSeriesWithParams({
   appendParam(params, "company", resolvedCompany);
   appendParam(params, "date_from", dateFrom);
   appendParam(params, "date_to", dateTo);
+  appendParam(params, "project_preset", projectPreset);
   const url = buildUrl(`/series?${params.toString()}`);
   updateSeriesDebugPanel({ url, status: "loading", points: [] });
   if (DEBUG) {
@@ -1160,6 +1223,7 @@ async function fetchSeriesWithParams({
       warehouses,
       dateFrom,
       dateTo,
+      projectPreset,
     });
     console.log("seriesUrl", url);
   }
@@ -1231,7 +1295,7 @@ async function fetchSeriesForItem(item) {
     setChartErrorState({ status: "—", body: "Не найден item_id для выбранной строки." });
     return;
   }
-  const { company, warehouses, dateFrom, dateTo } = collectFilters();
+  const { company, warehouses, dateFrom, dateTo, projectPreset } = collectFilters();
   const rowWarehouse =
     topGroupByWarehouse && item?.warehouse && item.warehouse !== ALL_WAREHOUSES_LABEL
       ? item.warehouse
@@ -1247,6 +1311,7 @@ async function fetchSeriesForItem(item) {
     warehouses: resolvedWarehouses,
     dateFrom,
     dateTo,
+    projectPreset,
   });
 }
 
@@ -1291,6 +1356,7 @@ async function fetchTop() {
     manufacturer,
     company,
     project,
+    projectPreset,
     warehouses,
     dateFrom,
     dateTo,
@@ -1307,6 +1373,7 @@ async function fetchTop() {
   appendParam(params, "manufacturer", manufacturer);
   appendParam(params, "company", company);
   appendParam(params, "project", project);
+  appendParam(params, "project_preset", projectPreset);
   appendParam(params, "warehouses", warehouses);
   appendParam(params, "date_from", dateFrom);
   appendParam(params, "date_to", dateTo);
@@ -1320,6 +1387,7 @@ async function fetchTop() {
       manufacturer,
       company,
       project,
+      projectPreset,
       warehouses,
       dateFrom,
       dateTo,
@@ -1422,5 +1490,6 @@ companySwitcher?.addEventListener("change", () => {
 
 loadWarehouseOptions();
 initWarehouseActions();
+initProjectPresets();
 fetchLatestLoadedDate();
 setChartPlaceholder();

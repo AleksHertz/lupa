@@ -9,6 +9,54 @@ from sqlalchemy.orm import Session
 
 from app.models import FactDeltaChange, FactSnapshot, Item
 
+PROJECT_GROUPS = {
+    "Корея": [
+        "ПРОЕКТ ЭЛЕКТРИКА\\СТАРТВОЛЬТ-ИНОМАРКИ",
+        "ПРОЕКТ KOREA ЛЕГКОВЫЕ ОПТ\\MANDO-ЛЕГКОВОЙ ОБЩАЯ\\MANDO-КОНТРОЛЬ",
+        "ПРОЕКТ CHINA\\CHINA-РТИ ОБЩАЯ\\CHINA-ПРОКЛАДКИ СИЛ",
+        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\SAMPA",
+        "ПРОЕКТ ИНОМАРКИ ГРУЗОВЫЕ ОПТ\\LUZAR-ИНОМАРКИ ГРУЗОВЫЕ",
+        "ПРОЕКТ АВТОКОМПОНЕНТЫ\\PSP",
+        "ПРОЕКТ ИНОМАРКИ ЛЕГКОВЫЕ ОПТ\\BOSCH ОБЩАЯ\\BOSCH ИНОМАРКИ ГРУЗ",
+        "ПРОЕКТ РОЗНИЦА\\*ГРУППА ИНОМАРКИ ЛЕГКОВЫЕ ОБЩАЯ\\ECO-ИНОМАРКИ",
+        "ПРОЕКТ KOREA ГРУЗОВЫЕ ОПТ\\HYUNDAI/KIA-ГРУЗОВОЙ ОБЩАЯ\\MOBIS KOREA-ГРУЗОВОЙ",
+        "ПРОЕКТ MEGAPOWER ЗАПЧАСТИ\\MR-РК ТОРМ.НАКЛАДКИ",
+        "ПРОЕКТ ЭЛЕКТРИКА\\ПРОЕКТ ЭЛЕКТРОСИЛА ОБЩАЯ\\TESLA-ГЕНЕРАТОРЫ СТАРТЕРА",
+    ],
+    "Китай": [
+        "ПРОЕКТ КАМАЗ ГОРОД\\КИТАЙ-КАМАЗ",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\SHACMAN OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\HOWO SITRAK",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ГРУЗОВОЙ OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\FAW OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ЛЕГКОВОЙ OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\DONGFENG ОБЩАЯ\\DONGFENG OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\FOTON OE",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-JAC",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\JAC-ЦС",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-SHACMAN",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\MOVELEX-КИТАЙ ОБЩАЯ\\MOVELEX-SITRAK",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\ПОДПРОЕКТ JAC ОБЩАЯ\\КАМАЗ КОМПАС",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\+КИТАЙ ГРУЗОВЫЕ ОПТ-УЦЕНКА",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\+КИТАЙ ГРУЗОВЫЕ ОПТ-ЗАКРЫТО",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\CREATEK",
+        "ПРОЕКТ МАЗ\\КИТАЙ-МАЗ",
+        "ПРОЕКТ ПНЕВМО\\ПНЕВМО-КИТАЙ",
+        "ПРОЕКТ КИТАЙ ГРУЗОВЫЕ ОПТ\\WEICHAI",
+    ],
+}
+
+PROJECT_PRESET_MAP = {
+    "korea": PROJECT_GROUPS["Корея"],
+    "china": PROJECT_GROUPS["Китай"],
+}
+
+
+def resolve_project_groups(preset: str | None) -> list[str] | None:
+    if not preset:
+        return None
+    return PROJECT_PRESET_MAP.get(preset.lower())
+
 SERIES_CACHE = TTLCache(maxsize=256, ttl=300)
 SUGGESTION_CACHE = TTLCache(maxsize=512, ttl=300)
 logger = logging.getLogger(__name__)
@@ -260,6 +308,7 @@ def get_series_v2(
     warehouses: list[str] | None,
     date_from: date,
     date_to: date,
+    project_groups: list[str] | None = None,
 ) -> dict[str, Any]:
     if item_id is None:
         return {
@@ -283,6 +332,12 @@ def get_series_v2(
         },
     )
 
+    project_item_ids_stmt = None
+    if project_groups:
+        project_item_ids_stmt = select(Item.id).where(Item.group_name.in_(project_groups))
+        if company:
+            project_item_ids_stmt = project_item_ids_stmt.where(Item.company == company)
+
     availability_filters = [FactSnapshot.item_id == item_id]
     delta_availability_filters = [FactDeltaChange.item_id == item_id]
     if company:
@@ -291,6 +346,9 @@ def get_series_v2(
     if warehouses:
         availability_filters.append(FactSnapshot.warehouse.in_(warehouses))
         delta_availability_filters.append(FactDeltaChange.warehouse.in_(warehouses))
+    if project_item_ids_stmt is not None:
+        availability_filters.append(FactSnapshot.item_id.in_(project_item_ids_stmt))
+        delta_availability_filters.append(FactDeltaChange.item_id.in_(project_item_ids_stmt))
 
     availability_snapshot = select(FactSnapshot.data_date.label("data_date")).where(
         *availability_filters
@@ -361,6 +419,9 @@ def get_series_v2(
     if resolved_warehouses:
         snapshot_filters.append(FactSnapshot.warehouse.in_(resolved_warehouses))
         delta_filters.append(FactDeltaChange.warehouse.in_(resolved_warehouses))
+    if project_item_ids_stmt is not None:
+        snapshot_filters.append(FactSnapshot.item_id.in_(project_item_ids_stmt))
+        delta_filters.append(FactDeltaChange.item_id.in_(project_item_ids_stmt))
 
     snapshot_subq = (
         select(
@@ -522,12 +583,13 @@ def get_top_sales(
     manufacturer: str | None = None,
     name: str | None = None,
     project: str | None = None,
+    project_groups: list[str] | None = None,
     group_by_warehouse: bool = False,
     date_from: date | None = None,
     date_to: date | None = None,
 ) -> dict[str, Any]:
     item_ids_stmt = None
-    if sku or manufacturer or name or project or company:
+    if sku or manufacturer or name or project or project_groups or company:
         item_ids_stmt = select(Item.id)
         if sku:
             sku_filter = or_(
@@ -543,6 +605,8 @@ def get_top_sales(
             item_ids_stmt = item_ids_stmt.where(Item.name.ilike(f"%{name}%"))
         if project:
             item_ids_stmt = item_ids_stmt.where(Item.project_label == project)
+        if project_groups:
+            item_ids_stmt = item_ids_stmt.where(Item.group_name.in_(project_groups))
         if company:
             item_ids_stmt = item_ids_stmt.where(Item.company == company)
 

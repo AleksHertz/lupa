@@ -31,6 +31,7 @@ from app.services.query import (
     get_series_v2,
     get_suggestions,
     get_top_sales,
+    resolve_project_groups,
 )
 
 
@@ -284,10 +285,12 @@ def series(
     company: str | None = Query(default="alliance"),
     date_from: date = Query(...),
     date_to: date = Query(...),
+    project_preset: str | None = Query(default=None),
     session: Session = Depends(get_session),
 ):
     warehouses = _normalize_csv_list(warehouses)
     company_norm = _normalize_company(_normalize_blank(company))
+    project_groups = resolve_project_groups(_normalize_blank(project_preset))
     logger.info(
         "Series params",
         extra={
@@ -296,6 +299,7 @@ def series(
             "date_to": date_to.isoformat(),
             "warehouses": warehouses,
             "item_id": item_id,
+            "project_preset": project_preset,
         },
     )
     payload = get_series_v2(
@@ -305,6 +309,7 @@ def series(
         warehouses=warehouses,
         date_from=date_from,
         date_to=date_to,
+        project_groups=project_groups,
     )
     logger.info(
         "Series response",
@@ -345,6 +350,7 @@ def top_sales(
     manufacturer: str | None = Query(default=None),
     name: str | None = Query(default=None),
     project_label: str | None = Query(default=None, alias="project"),
+    project_preset: str | None = Query(default=None),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     session: Session = Depends(get_session),
@@ -376,6 +382,10 @@ def top_sales(
     manufacturer = _normalize_blank(manufacturer)
     project_label = _normalize_blank(project_label)
     name = _normalize_blank(name)
+    project_preset = _normalize_blank(project_preset)
+    if project_label:
+        project_preset = None
+    project_groups = resolve_project_groups(project_preset)
     company_norm = _normalize_company(_normalize_blank(company))
     date_from = _parse_date(date_from, "date_from")
     date_to = _parse_date(date_to, "date_to")
@@ -398,6 +408,7 @@ def top_sales(
                 "sku": sku,
                 "item_name": name,
                 "project": project_label,
+                "project_preset": project_preset,
                 "group_by_warehouse": group_by_warehouse,
             }
         ),
@@ -413,6 +424,7 @@ def top_sales(
             manufacturer=manufacturer,
             name=name,
             project=project_label,
+            project_groups=project_groups,
             group_by_warehouse=group_by_warehouse,
             date_from=date_from,
             date_to=date_to,

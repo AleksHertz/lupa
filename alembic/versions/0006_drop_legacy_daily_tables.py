@@ -22,6 +22,7 @@ def upgrade():
     )
 
 
+
 def downgrade():
     # No-op: legacy tables were dropped and the index addition is non-destructive.
     pass

@@ -33,6 +33,9 @@ const seriesDebugUrl = document.getElementById("series-debug-url");
 const seriesDebugStatus = document.getElementById("series-debug-status");
 const seriesDebugCount = document.getElementById("series-debug-count");
 const seriesDebugSample = document.getElementById("series-debug-sample");
+const seriesExportButton = document.getElementById("series-export-button");
+const topExportButton = document.getElementById("top-export-button");
+const topExportMode = document.getElementById("top-export-mode");
 
 const BASE_URL = window.BASE_URL ?? "";
 const buildUrl = (path) => `${BASE_URL}${path}`;
@@ -259,6 +262,33 @@ function appendParam(params, key, value) {
   params.append(key, value);
 }
 
+function getFilenameFromDisposition(disposition) {
+  if (!disposition) return null;
+  const match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (match?.[1]) {
+    return decodeURIComponent(match[1]);
+  }
+  const plainMatch = disposition.match(/filename="([^"]+)"/i);
+  return plainMatch?.[1] || null;
+}
+
+async function downloadExcel(url, fallbackName) {
+  const result = await safeFetch(url, { method: "GET" }, false);
+  if (!result.response?.ok) {
+    return;
+  }
+  const blob = await result.response.blob();
+  const disposition = result.response.headers.get("content-disposition");
+  const filename = getFilenameFromDisposition(disposition) || fallbackName || "export.xlsx";
+  const link = document.createElement("a");
+  link.href = window.URL.createObjectURL(blob);
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  window.URL.revokeObjectURL(link.href);
+  link.remove();
+}
+
 function collectFilters() {
   const sku = document.getElementById("filter-sku").value || "";
   const manufacturer = document.getElementById("filter-manufacturer").value || "";
@@ -458,6 +488,7 @@ function applyTopFilter() {
 function setSelectedItem(item, options = {}) {
   if (!item) return;
   lastSelectedItem = item;
+  updateSeriesExportButton();
   if (DEBUG) {
     const { warehouses, dateFrom, dateTo, company } = collectFilters();
     console.debug("selected row", {
@@ -1275,6 +1306,7 @@ async function fetchSeriesWithParams({
     warehouses,
     dateFrom,
     dateTo,
+    projectPreset,
   };
   renderSeries(result.payload);
 }
@@ -1416,9 +1448,39 @@ async function fetchTop() {
   } else {
     selectedTopKey = null;
     selectedTopIndex = -1;
+    lastSelectedItem = null;
+    updateSeriesExportButton();
     renderTopTable(filteredTopItems);
     setChartPlaceholder();
   }
+}
+
+function updateSeriesExportButton() {
+  if (!seriesExportButton) return;
+  const enabled = Boolean(lastSelectedItem?.item_id);
+  seriesExportButton.disabled = !enabled;
+}
+
+function buildSeriesExportParams() {
+  if (!lastSelectedItem?.item_id) return null;
+  const { company, warehouses, dateFrom, dateTo, projectPreset } = collectFilters();
+  const rowWarehouse =
+    topGroupByWarehouse && lastSelectedItem?.warehouse && lastSelectedItem.warehouse !== ALL_WAREHOUSES_LABEL
+      ? lastSelectedItem.warehouse
+      : null;
+  const resolvedWarehouses = rowWarehouse
+    ? [rowWarehouse]
+    : warehouses.length > 0
+      ? warehouses
+      : null;
+  return {
+    itemId: lastSelectedItem.item_id,
+    company,
+    warehouses: resolvedWarehouses,
+    dateFrom,
+    dateTo,
+    projectPreset,
+  };
 }
 
 applyFilters?.addEventListener("click", (event) => {
@@ -1467,6 +1529,79 @@ topPageSizeSelect?.addEventListener("change", () => {
   fetchTop();
 });
 
+seriesExportButton?.addEventListener("click", () => {
+  const params = buildSeriesExportParams();
+  if (!params?.itemId) {
+    setFetchError({
+      url: "/export/series",
+      status: "—",
+      body: "Сначала выберите товар в таблице.",
+    });
+    return;
+  }
+  if (!params.dateFrom || !params.dateTo) {
+    setFetchError({
+      url: "/export/series",
+      status: "—",
+      body: "Выберите период для экспорта.",
+    });
+    return;
+  }
+  const search = new URLSearchParams();
+  appendParam(search, "item_id", params.itemId);
+  appendParam(search, "company", params.company);
+  appendParam(search, "warehouses", params.warehouses);
+  appendParam(search, "date_from", params.dateFrom);
+  appendParam(search, "date_to", params.dateTo);
+  appendParam(search, "project_preset", params.projectPreset);
+  appendParam(
+    search,
+    "group_by_warehouse",
+    !(sumWarehouseToggle?.checked ?? false)
+  );
+  const url = buildUrl(`/export/series?${search.toString()}`);
+  downloadExcel(url, "series.xlsx");
+});
+
+topExportButton?.addEventListener("click", () => {
+  const {
+    sku,
+    manufacturer,
+    company,
+    project,
+    projectPreset,
+    warehouses,
+    dateFrom,
+    dateTo,
+  } = collectFilters();
+  if (!dateFrom || !dateTo) {
+    setFetchError({
+      url: "/export/top",
+      status: "—",
+      body: "Выберите период для экспорта.",
+    });
+    return;
+  }
+  const exportAll = topExportMode?.value === "all";
+  const params = new URLSearchParams();
+  appendParam(params, "sku", sku);
+  appendParam(params, "manufacturer", manufacturer);
+  appendParam(params, "company", company);
+  appendParam(params, "project", project);
+  appendParam(params, "project_preset", projectPreset);
+  appendParam(params, "warehouses", warehouses);
+  appendParam(params, "date_from", dateFrom);
+  appendParam(params, "date_to", dateTo);
+  appendParam(params, "limit", topPageSize);
+  appendParam(params, "page", topPage);
+  appendParam(params, "group_by_warehouse", topGroupByWarehouse);
+  if (exportAll) {
+    appendParam(params, "export_all", true);
+  }
+  const url = buildUrl(`/export/top?${params.toString()}`);
+  downloadExcel(url, "top.xlsx");
+});
+
 stockToggle?.addEventListener("change", () => {
   if (lastSeriesPayload) {
     renderSeries(lastSeriesPayload);
@@ -1493,3 +1628,4 @@ initWarehouseActions();
 initProjectPresets();
 fetchLatestLoadedDate();
 setChartPlaceholder();
+updateSeriesExportButton();

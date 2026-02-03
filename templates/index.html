@@ -134,6 +134,16 @@
             <span class="page-total" id="top-page-total">из 1</span>
             <button type="button" id="top-page-next">Вперёд</button>
           </div>
+          <div class="top-export">
+            <label class="inline">
+              <span>Экспорт</span>
+              <select id="top-export-mode">
+                <option value="page" selected>Текущая страница</option>
+                <option value="all">Всё (до 20 000)</option>
+              </select>
+            </label>
+            <button type="button" id="top-export-button">Скачать топ-таблицу</button>
+          </div>
         </div>
         <div class="table-wrap">
           <table class="data-table">
@@ -173,6 +183,9 @@
               <span>Сумма по складам</span>
               <input type="checkbox" id="toggle-sum-warehouses" />
             </label>
+            <button type="button" id="series-export-button" disabled>
+              Скачать Excel по товару
+            </button>
           </div>
         </div>
         <div id="chart" class="chart"></div>

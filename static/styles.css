@@ -329,6 +329,17 @@ button:hover {
   gap: 8px;
 }
 
+.top-export {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.top-export button {
+  white-space: nowrap;
+}
+
 .page-total {
   font-size: 13px;
   color: #475467;
@@ -416,4 +427,13 @@ button:hover {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.chart-toggles button {
+  align-self: flex-start;
+}
+
+button:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
 }

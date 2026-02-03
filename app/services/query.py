@@ -301,7 +301,7 @@ def get_series(
     return payload
 
 
-def get_series_v2(
+def build_series_query(
     session: Session,
     item_id: int | None,
     company: str | None,
@@ -309,28 +309,9 @@ def get_series_v2(
     date_from: date,
     date_to: date,
     project_groups: list[str] | None = None,
-) -> dict[str, Any]:
+) -> tuple[Any | None, list[str], dict[str, str | None]]:
     if item_id is None:
-        return {
-            "item_id": None,
-            "company": company,
-            "warehouses": warehouses or [],
-            "date_from": date_from.isoformat(),
-            "date_to": date_to.isoformat(),
-            "available_range": {"min": None, "max": None},
-            "series": [],
-        }
-
-    logger.info(
-        "Series normalized params",
-        extra={
-            "item_id": item_id,
-            "company": company,
-            "warehouses": warehouses,
-            "date_from": date_from.isoformat(),
-            "date_to": date_to.isoformat(),
-        },
-    )
+        return None, [], {"min": None, "max": None}
 
     project_item_ids_stmt = None
     if project_groups:
@@ -390,9 +371,7 @@ def get_series_v2(
             warehouse_delta_stmt = warehouse_delta_stmt.where(
                 FactDeltaChange.company == company
             )
-        warehouse_union = (
-            warehouse_snapshot_stmt.union(warehouse_delta_stmt).subquery()
-        )
+        warehouse_union = warehouse_snapshot_stmt.union(warehouse_delta_stmt).subquery()
         resolved_warehouses = (
             session.execute(
                 select(warehouse_union.c.warehouse)
@@ -467,9 +446,7 @@ def get_series_v2(
             snapshot_subq.c.stock_qty.label("stock_qty"),
             snapshot_subq.c.price.label("price"),
             func.coalesce(delta_subq.c.sold_qty, 0).label("sold_qty"),
-            func.coalesce(delta_subq.c.replenished_qty, 0).label(
-                "replenished_qty"
-            ),
+            func.coalesce(delta_subq.c.replenished_qty, 0).label("replenished_qty"),
         )
         .select_from(
             snapshot_subq.outerjoin(
@@ -484,6 +461,49 @@ def get_series_v2(
         )
         .order_by(snapshot_subq.c.data_date.asc(), snapshot_subq.c.warehouse.asc())
     )
+    return stmt, resolved_warehouses, availability_range
+
+
+def get_series_v2(
+    session: Session,
+    item_id: int | None,
+    company: str | None,
+    warehouses: list[str] | None,
+    date_from: date,
+    date_to: date,
+    project_groups: list[str] | None = None,
+) -> dict[str, Any]:
+    stmt, resolved_warehouses, availability_range = build_series_query(
+        session=session,
+        item_id=item_id,
+        company=company,
+        warehouses=warehouses,
+        date_from=date_from,
+        date_to=date_to,
+        project_groups=project_groups,
+    )
+    if stmt is None:
+        return {
+            "item_id": None,
+            "company": company,
+            "warehouses": warehouses or [],
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+            "available_range": {"min": None, "max": None},
+            "series": [],
+        }
+
+    logger.info(
+        "Series normalized params",
+        extra={
+            "item_id": item_id,
+            "company": company,
+            "warehouses": warehouses,
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+        },
+    )
+
     rows = session.execute(stmt).mappings().all()
     series = [
         {
@@ -571,6 +591,28 @@ def get_availability(session: Session, company: str | None) -> dict[str, str | N
     min_date = row.min_date.isoformat() if row.min_date else None
     max_date = row.max_date.isoformat() if row.max_date else None
     return {"min": min_date, "max": max_date}
+
+
+def get_item_summary(
+    session: Session,
+    item_id: int,
+    company: str | None = None,
+) -> dict[str, Any] | None:
+    stmt = (
+        select(
+            Item.id.label("item_id"),
+            Item.canonical_sku.label("canonical_sku"),
+            Item.name.label("name"),
+            Item.manufacturer_norm.label("manufacturer"),
+            Item.group_name.label("group_name"),
+        )
+        .where(Item.id == item_id)
+        .limit(1)
+    )
+    if company:
+        stmt = stmt.where(Item.company == company)
+    row = session.execute(stmt).mappings().first()
+    return dict(row) if row else None
 
 
 def get_top_sales(

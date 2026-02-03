@@ -10,4 +10,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0"]
+RUN chmod +x /app/start.sh
+
+CMD ["/app/start.sh"]

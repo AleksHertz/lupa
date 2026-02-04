@@ -2,6 +2,7 @@ import logging
 import re
 import time
 import unicodedata
+from decimal import Decimal
 from datetime import date, datetime, timedelta
 from io import BytesIO
 from typing import Literal
@@ -14,7 +15,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
+from openpyxl.utils import get_column_letter
 from sqlalchemy.exc import NoSuchTableError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import text
@@ -121,6 +125,80 @@ def sanitize_ascii_filename(value: str, fallback: str = "export.xlsx") -> str:
     if not normalized.lower().endswith(".xlsx"):
         normalized = f"{normalized}.xlsx"
     return normalized[:180]
+
+
+_PRICE_FORMAT_INT = '# ##0 "₽"'
+_PRICE_FORMAT_FLOAT = '# ##0,00 "₽"'
+_MAX_COLUMN_WIDTH = 60
+_COLUMN_WIDTH_PADDING = 2
+
+
+def _format_price_for_width(value: int | float | Decimal) -> str:
+    numeric = float(value)
+    if numeric.is_integer():
+        formatted = f"{int(round(numeric)):,}".replace(",", " ")
+    else:
+        formatted = f"{numeric:,.2f}".replace(",", " ").replace(".", ",")
+    return f"{formatted} ₽"
+
+
+def _cell_display_value(value: object) -> str:
+    if isinstance(value, WriteOnlyCell):
+        cell_value = value.value
+        if value.number_format in {_PRICE_FORMAT_INT, _PRICE_FORMAT_FLOAT} and isinstance(
+            cell_value, (int, float, Decimal)
+        ):
+            return _format_price_for_width(cell_value)
+        return "" if cell_value is None else str(cell_value)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _update_column_widths(
+    widths: dict[int, int],
+    row: list[object],
+) -> None:
+    for index, value in enumerate(row, start=1):
+        length = len(_cell_display_value(value))
+        if length > widths.get(index, 0):
+            widths[index] = length
+
+
+def _append_row(
+    worksheet,
+    row: list[object],
+    width_tracker: dict[str, dict[int, int]],
+) -> None:
+    worksheet.append(row)
+    sheet_widths = width_tracker.setdefault(worksheet.title, {})
+    _update_column_widths(sheet_widths, row)
+
+
+def _apply_auto_width(
+    workbook: Workbook,
+    width_tracker: dict[str, dict[int, int]],
+) -> None:
+    for worksheet in workbook.worksheets:
+        widths = width_tracker.get(worksheet.title, {})
+        for index, max_len in widths.items():
+            if max_len <= 0:
+                continue
+            adjusted = min(max_len + _COLUMN_WIDTH_PADDING, _MAX_COLUMN_WIDTH)
+            worksheet.column_dimensions[get_column_letter(index)].width = adjusted
+
+
+def _create_price_cell(worksheet, value: object) -> object:
+    if value is None:
+        return None
+    if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+        cell = WriteOnlyCell(worksheet, value=value)
+        if float(value).is_integer():
+            cell.number_format = _PRICE_FORMAT_INT
+        else:
+            cell.number_format = _PRICE_FORMAT_FLOAT
+        return cell
+    return value
 
 
 def _sanitize_sheet_name(name: str, existing: set[str]) -> str:
@@ -448,7 +526,9 @@ def export_series(
     workbook = Workbook(write_only=True)
     summary_sheet = workbook.create_sheet("Сводка")
     data_sheet = workbook.create_sheet("Данные")
-    data_sheet.append(
+    column_widths: dict[str, dict[int, int]] = {}
+    _append_row(
+        data_sheet,
         [
             "Дата",
             "Склад",
@@ -456,7 +536,8 @@ def export_series(
             "Продано",
             "Пополнено",
             "Цена",
-        ]
+        ],
+        column_widths,
     )
 
     existing_sheet_names = {"Сводка", "Данные"}
@@ -479,15 +560,19 @@ def export_series(
         replenished_qty = int(row["replenished_qty"] or 0)
         price_value = float(row["price"]) if row["price"] is not None else None
         date_label = _format_ru_date(data_date)
-        data_sheet.append(
-            [date_label, warehouse, stock_qty, sold_qty, replenished_qty, price_value]
+        price_cell = _create_price_cell(data_sheet, price_value)
+        _append_row(
+            data_sheet,
+            [date_label, warehouse, stock_qty, sold_qty, replenished_qty, price_cell],
+            column_widths,
         )
         if multiple_warehouses:
             sheet = warehouse_sheets.get(warehouse)
             if sheet is None:
                 sheet_name = _sanitize_sheet_name(warehouse, existing_sheet_names)
                 sheet = workbook.create_sheet(sheet_name)
-                sheet.append(
+                _append_row(
+                    sheet,
                     [
                         "Дата",
                         "Склад",
@@ -495,11 +580,15 @@ def export_series(
                         "Продано",
                         "Пополнено",
                         "Цена",
-                    ]
+                    ],
+                    column_widths,
                 )
                 warehouse_sheets[warehouse] = sheet
-            sheet.append(
-                [date_label, warehouse, stock_qty, sold_qty, replenished_qty, price_value]
+            price_cell = _create_price_cell(sheet, price_value)
+            _append_row(
+                sheet,
+                [date_label, warehouse, stock_qty, sold_qty, replenished_qty, price_cell],
+                column_widths,
             )
 
         sold_total += sold_qty
@@ -548,56 +637,87 @@ def export_series(
     warehouses_label = (
         ", ".join(resolved_warehouses) if resolved_warehouses else "ВСЕ"
     )
-    summary_sheet.append(["Артикул", item_summary.get("canonical_sku") or "—"])
-    summary_sheet.append(["Наименование", item_summary.get("name") or "—"])
-    summary_sheet.append(
-        ["Производитель", item_summary.get("manufacturer") or "—"]
+    _append_row(
+        summary_sheet,
+        ["Артикул", item_summary.get("canonical_sku") or "—"],
+        column_widths,
     )
-    summary_sheet.append(["Компания", company_norm])
-    summary_sheet.append(
+    _append_row(
+        summary_sheet,
+        ["Наименование", item_summary.get("name") or "—"],
+        column_widths,
+    )
+    _append_row(
+        summary_sheet,
+        ["Производитель", item_summary.get("manufacturer") or "—"],
+        column_widths,
+    )
+    _append_row(summary_sheet, ["Компания", company_norm], column_widths)
+    _append_row(
+        summary_sheet,
         [
             "Период",
             f"{_format_ru_date(date_from)} - {_format_ru_date(date_to)}",
-        ]
+        ],
+        column_widths,
     )
-    summary_sheet.append(["Склад(ы)", warehouses_label])
-    summary_sheet.append([])
-    summary_sheet.append(["Продано", sold_total])
-    summary_sheet.append(["Пополнено", replenished_total])
-    summary_sheet.append(["Последняя цена", last_price_value])
-    summary_sheet.append(["Остаток на конец периода", latest_stock_total])
-    summary_sheet.append(
+    _append_row(summary_sheet, ["Склад(ы)", warehouses_label], column_widths)
+    _append_row(summary_sheet, [], column_widths)
+    _append_row(summary_sheet, ["Продано", sold_total], column_widths)
+    _append_row(summary_sheet, ["Пополнено", replenished_total], column_widths)
+    _append_row(summary_sheet, ["Последняя цена", last_price_value], column_widths)
+    _append_row(
+        summary_sheet,
+        ["Остаток на конец периода", latest_stock_total],
+        column_widths,
+    )
+    _append_row(
+        summary_sheet,
         [
             "Последняя загруженная дата",
             _format_ru_date(get_latest_loaded_date(session=session, company=company_norm)),
-        ]
+        ],
+        column_widths,
     )
-    summary_sheet.append(
+    _append_row(
+        summary_sheet,
         [
             "Доступный период",
             f"{_format_ru_date(availability_range.get('min'))} - {_format_ru_date(availability_range.get('max'))}",
-        ]
+        ],
+        column_widths,
     )
 
     if include_aggregate:
         aggregate_sheet = workbook.create_sheet("Итого")
-        aggregate_sheet.append(["Примечание", "Цена = средняя по складам за дату"])
-        aggregate_sheet.append([])
-        aggregate_sheet.append(["Дата", "Остаток", "Продано", "Пополнено", "Цена"])
+        _append_row(
+            aggregate_sheet,
+            ["Примечание", "Цена = средняя по складам за дату"],
+            column_widths,
+        )
+        _append_row(aggregate_sheet, [], column_widths)
+        _append_row(
+            aggregate_sheet,
+            ["Дата", "Остаток", "Продано", "Пополнено", "Цена"],
+            column_widths,
+        )
         for agg_date in sorted(aggregated_by_date.keys()):
             summary = aggregated_by_date[agg_date]
             price_count = aggregated_price_counts.get(agg_date, 0)
             avg_price = (
                 summary["price_sum"] / price_count if price_count > 0 else None
             )
-            aggregate_sheet.append(
+            avg_price_cell = _create_price_cell(aggregate_sheet, avg_price)
+            _append_row(
+                aggregate_sheet,
                 [
                     _format_ru_date(agg_date),
                     summary["stock_qty"],
                     summary["sold_qty"],
                     summary["replenished_qty"],
-                    avg_price,
-                ]
+                    avg_price_cell,
+                ],
+                column_widths,
             )
 
     filename = _sanitize_filename(
@@ -605,6 +725,7 @@ def export_series(
         fallback="series.xlsx",
     )
     output = BytesIO()
+    _apply_auto_width(workbook, column_widths)
     workbook.save(output)
     output.seek(0)
     duration_ms = (time.perf_counter() - start_time) * 1000
@@ -804,7 +925,9 @@ def export_top(
 
     workbook = Workbook(write_only=True)
     top_sheet = workbook.create_sheet("Топ")
-    top_sheet.append(
+    column_widths: dict[str, dict[int, int]] = {}
+    _append_row(
+        top_sheet,
         [
             "Ранг",
             "Артикул",
@@ -814,7 +937,8 @@ def export_top(
             "Пополнено",
             "Последняя цена",
             "Группа/Проект",
-        ]
+        ],
+        column_widths,
     )
 
     rows_written = 0
@@ -869,7 +993,9 @@ def export_top(
                     if not group_by_warehouse
                     else (item.get("warehouse") or "—")
                 )
-                top_sheet.append(
+                price_cell = _create_price_cell(top_sheet, item.get("last_price"))
+                _append_row(
+                    top_sheet,
                     [
                         item.get("rank") or "—",
                         item.get("canonical_sku") or "—",
@@ -877,9 +1003,10 @@ def export_top(
                         warehouse_label,
                         item.get("sold_total") or 0,
                         item.get("replenished_total") or 0,
-                        item.get("last_price"),
+                        price_cell,
                         item.get("group_name") or "—",
-                    ]
+                    ],
+                    column_widths,
                 )
             rows_written += len(items)
     else:
@@ -905,7 +1032,9 @@ def export_top(
             warehouse_label = (
                 "ВСЕ" if not group_by_warehouse else (item.get("warehouse") or "—")
             )
-            top_sheet.append(
+            price_cell = _create_price_cell(top_sheet, item.get("last_price"))
+            _append_row(
+                top_sheet,
                 [
                     item.get("rank") or "—",
                     item.get("canonical_sku") or "—",
@@ -913,30 +1042,41 @@ def export_top(
                     warehouse_label,
                     item.get("sold_total") or 0,
                     item.get("replenished_total") or 0,
-                    item.get("last_price"),
+                    price_cell,
                     item.get("group_name") or "—",
-                ]
+                ],
+                column_widths,
             )
         rows_written = len(items)
 
     params_sheet = workbook.create_sheet("Параметры")
-    params_sheet.append(["Компания", company_norm])
-    params_sheet.append(
-        ["Период", f"{_format_ru_date(date_from)} - {_format_ru_date(date_to)}"]
+    _append_row(params_sheet, ["Компания", company_norm], column_widths)
+    _append_row(
+        params_sheet,
+        ["Период", f"{_format_ru_date(date_from)} - {_format_ru_date(date_to)}"],
+        column_widths,
     )
-    params_sheet.append(
-        ["Склады", ", ".join(warehouses) if warehouses else "ВСЕ"]
+    _append_row(
+        params_sheet,
+        ["Склады", ", ".join(warehouses) if warehouses else "ВСЕ"],
+        column_widths,
     )
-    params_sheet.append(["Проект", project_label or "—"])
-    params_sheet.append(["Preset", project_preset or "—"])
-    params_sheet.append(
-        ["Группировка по складам", "Да" if group_by_warehouse else "Нет"]
+    _append_row(params_sheet, ["Проект", project_label or "—"], column_widths)
+    _append_row(params_sheet, ["Preset", project_preset or "—"], column_widths)
+    _append_row(
+        params_sheet,
+        ["Группировка по складам", "Да" if group_by_warehouse else "Нет"],
+        column_widths,
     )
-    params_sheet.append(
-        ["Экспорт", "Все строки" if export_all_flag else "Текущая страница"]
+    _append_row(
+        params_sheet,
+        ["Экспорт", "Все строки" if export_all_flag else "Текущая страница"],
+        column_widths,
     )
-    params_sheet.append(
-        ["Экспортировано", datetime.now().strftime("%d.%m.%Y %H:%M")]
+    _append_row(
+        params_sheet,
+        ["Экспортировано", datetime.now().strftime("%d.%m.%Y %H:%M")],
+        column_widths,
     )
 
     filename = _sanitize_filename(
@@ -944,6 +1084,7 @@ def export_top(
         fallback="top.xlsx",
     )
     output = BytesIO()
+    _apply_auto_width(workbook, column_widths)
     workbook.save(output)
     output.seek(0)
     duration_ms = (time.perf_counter() - start_time) * 1000

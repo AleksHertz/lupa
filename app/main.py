@@ -110,6 +110,19 @@ def _sanitize_filename(value: str, fallback: str = "export.xlsx") -> str:
     return normalized[:180]
 
 
+def sanitize_ascii_filename(value: str, fallback: str = "export.xlsx") -> str:
+    normalized = unicodedata.normalize("NFKC", value).strip()
+    normalized = re.sub(r"[\\/:*?\"<>|]+", "_", normalized)
+    normalized = re.sub(r"\s+", "_", normalized)
+    normalized = "".join(char if ord(char) < 128 else "_" for char in normalized)
+    normalized = normalized.strip("._")
+    if not normalized:
+        normalized = fallback
+    if not normalized.lower().endswith(".xlsx"):
+        normalized = f"{normalized}.xlsx"
+    return normalized[:180]
+
+
 def _sanitize_sheet_name(name: str, existing: set[str]) -> str:
     clean = re.sub(r"[:\\/?*\[\]]", "_", name).strip() or "Sheet"
     clean = clean[:31]
@@ -123,9 +136,25 @@ def _sanitize_sheet_name(name: str, existing: set[str]) -> str:
     return candidate
 
 
-def _build_content_disposition(filename: str) -> str:
-    quoted = quote(filename)
-    return f"attachment; filename=\"{filename}\"; filename*=UTF-8''{quoted}"
+def content_disposition(filename_unicode: str) -> str:
+    ascii_fallback = sanitize_ascii_filename(filename_unicode)
+    utf8_star = quote(filename_unicode, safe="")
+    header_value = (
+        f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{utf8_star}"
+    )
+    try:
+        header_value.encode("ascii")
+    except UnicodeEncodeError:
+        logger.debug(
+            "Content-Disposition header contains non-ascii characters",
+            extra=safe_extra({"header": header_value}),
+        )
+    else:
+        logger.debug(
+            "Content-Disposition header generated",
+            extra=safe_extra({"header": header_value}),
+        )
+    return header_value
 
 
 def _normalize_query_string(query_string: bytes) -> bytes:
@@ -597,7 +626,7 @@ def export_series(
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": _build_content_disposition(filename)},
+        headers={"Content-Disposition": content_disposition(filename)},
     )
 
 
@@ -937,7 +966,7 @@ def export_top(
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": _build_content_disposition(filename)},
+        headers={"Content-Disposition": content_disposition(filename)},
     )
 
 

@@ -143,15 +143,22 @@ def _format_price_for_width(value: int | float | Decimal) -> str:
 
 
 def _cell_display_value(value: object) -> str:
+    if value is None:
+        return ""
     if isinstance(value, WriteOnlyCell):
         cell_value = value.value
         if value.number_format in {_PRICE_FORMAT_INT, _PRICE_FORMAT_FLOAT} and isinstance(
             cell_value, (int, float, Decimal)
         ):
             return _format_price_for_width(cell_value)
-        return "" if cell_value is None else str(cell_value)
-    if value is None:
-        return ""
+        return _cell_display_value(cell_value)
+    if isinstance(value, (date, datetime)):
+        return value.strftime("%d.%m.%Y")
+    if isinstance(value, Decimal):
+        return f"{value}"
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    logger.debug("Unexpected cell value type for width calc: %s", type(value))
     return str(value)
 
 
@@ -160,9 +167,12 @@ def _update_column_widths(
     row: list[object],
 ) -> None:
     for index, value in enumerate(row, start=1):
-        length = len(_cell_display_value(value))
-        if length > widths.get(index, 0):
-            widths[index] = length
+        try:
+            length = len(_cell_display_value(value))
+        except Exception:
+            logger.exception("Failed to calculate cell width, falling back to str().")
+            length = len("" if value is None else str(value))
+        widths[index] = max(widths.get(index, 0), length)
 
 
 def _append_row(
@@ -179,13 +189,18 @@ def _apply_auto_width(
     workbook: Workbook,
     width_tracker: dict[str, dict[int, int]],
 ) -> None:
-    for worksheet in workbook.worksheets:
-        widths = width_tracker.get(worksheet.title, {})
-        for index, max_len in widths.items():
-            if max_len <= 0:
-                continue
-            adjusted = min(max_len + _COLUMN_WIDTH_PADDING, _MAX_COLUMN_WIDTH)
-            worksheet.column_dimensions[get_column_letter(index)].width = adjusted
+    try:
+        for worksheet in workbook.worksheets:
+            widths = width_tracker.get(worksheet.title, {})
+            for index, max_len in widths.items():
+                if max_len <= 0:
+                    continue
+                adjusted = min(
+                    max(max_len + _COLUMN_WIDTH_PADDING, 8), _MAX_COLUMN_WIDTH
+                )
+                worksheet.column_dimensions[get_column_letter(index)].width = adjusted
+    except Exception:
+        logger.exception("Failed to apply auto-fit column widths.")
 
 
 def _create_price_cell(worksheet, value: object) -> object:

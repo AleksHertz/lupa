@@ -40,7 +40,7 @@ else:
     raise SystemExit("DB never became ready")
 PY
 
-  echo "Running alembic migrations..."
+  echo "Running alembic upgrade head"
   migration_attempt=1
   migration_max_attempts=5
   while true; do

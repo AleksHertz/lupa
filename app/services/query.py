@@ -748,13 +748,14 @@ def get_suggestions(
     session: Session, field: str, query: str, company: str | None, limit: int = 20
 ) -> list[str]:
     cache_key = _suggestion_cache_key(field, query, company)
-    cacheable_fields = {"sku", "name"}
+    cacheable_fields = {"sku", "name", "project"}
     if field in cacheable_fields and cache_key in SUGGESTION_CACHE:
         return SUGGESTION_CACHE[cache_key]
 
     allowed_fields = {
         "sku": Item.canonical_sku,
         "warehouse": FactDeltaChange.warehouse,
+        "project": Item.group_name,
         "manufacturer": Item.manufacturer_norm,
         "name": Item.name,
     }

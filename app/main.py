@@ -349,11 +349,20 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled server exception for %s", request.url, exc_info=exc)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
 @app.middleware("http")
 async def normalize_query_params(request: Request, call_next):
-    request.scope["query_string"] = _normalize_query_string(
-        request.scope.get("query_string", b"")
-    )
+    try:
+        request.scope["query_string"] = _normalize_query_string(
+            request.scope.get("query_string", b"")
+        )
+    except Exception:
+        logger.exception("Failed to normalize query params for %s", request.url)
     return await call_next(request)
 
 
@@ -394,7 +403,10 @@ async def log_requests(request: Request, call_next):
             },
         )
         logger.exception("Unhandled exception for %s", request.url)
-        raise
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+        )
     status_code = response.status_code
     duration_ms = (time.perf_counter() - start_time) * 1000
     logger.info(
@@ -839,20 +851,35 @@ def export_series(
 
 @app.get("/filters/suggestions")
 def filter_suggestions(
-    field: str = Query(..., description="sku, warehouse, manufacturer, name"),
+    field: str = Query(..., description="sku, warehouse, project, manufacturer, name"),
     q: str = Query(""),
     company: str | None = Query(default="alliance"),
+    limit: int = Query(default=20, ge=1, le=100),
     session: Session = Depends(get_session),
 ):
     company_norm = _normalize_company(_normalize_blank(company))
+    field_norm = _normalize_blank(field)
+    if field_norm is None:
+        raise HTTPException(status_code=400, detail="field is required")
     return {
         "items": get_suggestions(
             session=session,
-            field=field,
-            query=q,
+            field=field_norm,
+            query=_normalize_blank(q) or "",
             company=company_norm,
+            limit=limit,
         )
     }
+
+
+@app.get("/status")
+def status():
+    return {"status": "ok"}
+
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
 
 
 @app.get("/top")

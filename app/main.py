@@ -38,6 +38,7 @@ from app.services.query import (
     get_item_summary,
     get_latest_loaded_date,
     get_series_v2,
+    get_snapshot_date_range,
     get_suggestions,
     get_top_sales,
     resolve_project_groups,
@@ -468,14 +469,44 @@ def series(
     item_id: int = Query(...),
     warehouses: list[str] | None = Query(default=None, alias="warehouses"),
     company: str | None = Query(default="alliance"),
-    date_from: date = Query(...),
-    date_to: date = Query(...),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
     project_preset: str | None = Query(default=None),
+    all_time: str | None = Query(default=None),
+    name_preset: str | None = Query(default=None),
+    spring_subpreset: str | None = Query(default=None),
     session: Session = Depends(get_session),
 ):
     warehouses = _normalize_csv_list(warehouses)
     company_norm = _normalize_company(_normalize_blank(company))
     project_groups = resolve_project_groups(_normalize_blank(project_preset))
+    name_preset = _normalize_blank(name_preset)
+    spring_subpreset = _normalize_blank(spring_subpreset)
+    all_time_flag = _parse_bool(all_time, default=False)
+    date_from = _parse_iso_date(date_from, "date_from")
+    date_to = _parse_iso_date(date_to, "date_to")
+    if all_time_flag:
+        range_payload = get_snapshot_date_range(
+            session=session,
+            company=company_norm,
+            warehouses=warehouses,
+            item_id=item_id,
+            project_groups=project_groups,
+            name_preset=name_preset,
+            spring_subpreset=spring_subpreset,
+        )
+        date_from = _parse_iso_date(range_payload["min"], "date_from")
+        date_to = _parse_iso_date(range_payload["max"], "date_to")
+    if date_from is None or date_to is None:
+        return {
+            "item_id": item_id,
+            "company": company_norm,
+            "warehouses": warehouses or [],
+            "date_from": None,
+            "date_to": None,
+            "available_range": {"min": None, "max": None},
+            "series": [],
+        }
     logger.info(
         "Series params",
         extra={
@@ -485,6 +516,9 @@ def series(
             "warehouses": warehouses,
             "item_id": item_id,
             "project_preset": project_preset,
+            "all_time": all_time_flag,
+            "name_preset": name_preset,
+            "spring_subpreset": spring_subpreset,
         },
     )
     payload = get_series_v2(
@@ -495,6 +529,8 @@ def series(
         date_from=date_from,
         date_to=date_to,
         project_groups=project_groups,
+        name_preset=name_preset,
+        spring_subpreset=spring_subpreset,
     )
     logger.info(
         "Series response",
@@ -511,10 +547,13 @@ def export_series(
     item_id: int = Query(...),
     warehouses: list[str] | None = Query(default=None, alias="warehouses"),
     company: str | None = Query(default="alliance"),
-    date_from: date = Query(...),
-    date_to: date = Query(...),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
     project_preset: str | None = Query(default=None),
     group_by_warehouse: str | None = Query(default=None),
+    all_time: str | None = Query(default=None),
+    name_preset: str | None = Query(default=None),
+    spring_subpreset: str | None = Query(default=None),
     session: Session = Depends(get_session),
 ):
     start_time = time.perf_counter()
@@ -522,6 +561,23 @@ def export_series(
     company_norm = _normalize_company(_normalize_blank(company))
     project_groups = resolve_project_groups(_normalize_blank(project_preset))
     group_by_warehouse_flag = _parse_bool(group_by_warehouse, default=True)
+    name_preset = _normalize_blank(name_preset)
+    spring_subpreset = _normalize_blank(spring_subpreset)
+    all_time_flag = _parse_bool(all_time, default=False)
+    if all_time_flag:
+        range_payload = get_snapshot_date_range(
+            session=session,
+            company=company_norm,
+            warehouses=warehouses,
+            item_id=item_id,
+            project_groups=project_groups,
+            name_preset=name_preset,
+            spring_subpreset=spring_subpreset,
+        )
+        date_from = _parse_iso_date(range_payload["min"], "date_from")
+        date_to = _parse_iso_date(range_payload["max"], "date_to")
+    if date_from is None or date_to is None:
+        raise HTTPException(status_code=404, detail="Данные для серии не найдены.")
     item_summary = get_item_summary(session=session, item_id=item_id, company=company_norm)
     if not item_summary:
         raise HTTPException(status_code=404, detail="Товар не найден.")
@@ -534,6 +590,8 @@ def export_series(
         date_from=date_from,
         date_to=date_to,
         project_groups=project_groups,
+        name_preset=name_preset,
+        spring_subpreset=spring_subpreset,
     )
     if stmt is None:
         raise HTTPException(status_code=404, detail="Данные для серии не найдены.")
@@ -798,6 +856,9 @@ def top_sales(
     project_preset: str | None = Query(default=None),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
+    all_time: str | None = Query(default=None),
+    name_preset: str | None = Query(default=None),
+    spring_subpreset: str | None = Query(default=None),
     session: Session = Depends(get_session),
 ):
     warehouses_raw = request.query_params.get("warehouses")
@@ -817,8 +878,26 @@ def top_sales(
         project_preset = None
     project_groups = resolve_project_groups(project_preset)
     company_norm = _normalize_company(_normalize_blank(company))
+    name_preset = _normalize_blank(name_preset)
+    spring_subpreset = _normalize_blank(spring_subpreset)
+    all_time_flag = _parse_bool(all_time, default=False)
     date_from = _parse_iso_date(date_from, "date_from")
     date_to = _parse_iso_date(date_to, "date_to")
+    if all_time_flag:
+        resolved_range = get_snapshot_date_range(
+            session=session,
+            company=company_norm,
+            warehouses=warehouses,
+            sku=sku,
+            manufacturer=manufacturer,
+            name=name,
+            project=project_label,
+            project_groups=project_groups,
+            name_preset=name_preset,
+            spring_subpreset=spring_subpreset,
+        )
+        date_from = _parse_iso_date(resolved_range["min"], "date_from")
+        date_to = _parse_iso_date(resolved_range["max"], "date_to")
     if date_from is None and date_to is None:
         date_to = date.today()
         date_from = date_to - timedelta(days=30)
@@ -844,6 +923,9 @@ def top_sales(
                 "project": project_label,
                 "project_preset": project_preset,
                 "group_by_warehouse": group_by_warehouse,
+                "all_time": all_time_flag,
+                "name_preset": name_preset,
+                "spring_subpreset": spring_subpreset,
             }
         ),
     )
@@ -862,6 +944,8 @@ def top_sales(
             group_by_warehouse=group_by_warehouse,
             date_from=date_from,
             date_to=date_to,
+            name_preset=name_preset,
+            spring_subpreset=spring_subpreset,
         )
     except Exception:
         logger.exception(
@@ -910,6 +994,9 @@ def export_top(
     project_preset: str | None = Query(default=None),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
+    all_time: str | None = Query(default=None),
+    name_preset: str | None = Query(default=None),
+    spring_subpreset: str | None = Query(default=None),
     export_all: str | None = Query(default=None),
     session: Session = Depends(get_session),
 ):
@@ -932,8 +1019,26 @@ def export_top(
         project_preset = None
     project_groups = resolve_project_groups(project_preset)
     company_norm = _normalize_company(_normalize_blank(company))
+    name_preset = _normalize_blank(name_preset)
+    spring_subpreset = _normalize_blank(spring_subpreset)
+    all_time_flag = _parse_bool(all_time, default=False)
     date_from = _parse_iso_date(date_from, "date_from")
     date_to = _parse_iso_date(date_to, "date_to")
+    if all_time_flag:
+        resolved_range = get_snapshot_date_range(
+            session=session,
+            company=company_norm,
+            warehouses=warehouses,
+            sku=sku,
+            manufacturer=manufacturer,
+            name=name,
+            project=project_label,
+            project_groups=project_groups,
+            name_preset=name_preset,
+            spring_subpreset=spring_subpreset,
+        )
+        date_from = _parse_iso_date(resolved_range["min"], "date_from")
+        date_to = _parse_iso_date(resolved_range["max"], "date_to")
     if date_from is None and date_to is None:
         date_to = date.today()
         date_from = date_to - timedelta(days=30)
@@ -974,6 +1079,8 @@ def export_top(
             group_by_warehouse=group_by_warehouse,
             date_from=date_from,
             date_to=date_to,
+            name_preset=name_preset,
+            spring_subpreset=spring_subpreset,
         )
         total_count = total_payload.get("total_count", 0)
         if total_count > export_cap:
@@ -1000,6 +1107,8 @@ def export_top(
                 group_by_warehouse=group_by_warehouse,
                 date_from=date_from,
                 date_to=date_to,
+                name_preset=name_preset,
+                spring_subpreset=spring_subpreset,
             )
             items = payload.get("items", [])
             for item in items:
@@ -1040,6 +1149,8 @@ def export_top(
             group_by_warehouse=group_by_warehouse,
             date_from=date_from,
             date_to=date_to,
+            name_preset=name_preset,
+            spring_subpreset=spring_subpreset,
         )
         items = payload.get("items", [])
         total_count = payload.get("total_count", len(items))
@@ -1078,6 +1189,9 @@ def export_top(
     )
     _append_row(params_sheet, ["Проект", project_label or "—"], column_widths)
     _append_row(params_sheet, ["Preset", project_preset or "—"], column_widths)
+    _append_row(params_sheet, ["За всё время", "Да" if all_time_flag else "Нет"], column_widths)
+    _append_row(params_sheet, ["Пресет наименований", name_preset or "—"], column_widths)
+    _append_row(params_sheet, ["Подпресет рессоры", spring_subpreset or "—"], column_widths)
     _append_row(
         params_sheet,
         ["Группировка по складам", "Да" if group_by_warehouse else "Нет"],

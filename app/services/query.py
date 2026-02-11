@@ -68,11 +68,32 @@ RESSOR = r"\\mрессор\\w*\\M"
 LEAF = r"\\mлист\\w*\\M"
 BUSH = r"\\mвтулк\\w*\\M"
 UBOLT = r"\\mстремянк\\w*\\M"
-GAP = r"(?:\\s+\\S+){0,6}\\s+"
+GAP = r"(?:\s+\S+){0,6}\s+"
+
+PRESET_TUNNEL_PREFIX = "__preset__:"
+PRESET_TUNNEL_NAME_MAP = {
+    "spring:leaf": ("spring", "leaf"),
+    "spring:bushing": ("spring", "bushing"),
+    "spring:u_bolt": ("spring", "u_bolt"),
+    "spring:spring": ("spring", "spring"),
+    "spring:all": ("spring", "all"),
+    "spring_extra": ("spring_extra", None),
+}
 
 
 def pair_pattern(term_a: str, term_b: str) -> str:
     return f"(?:{term_a}{GAP}{term_b})|(?:{term_b}{GAP}{term_a})"
+
+
+def resolve_preset_tunnel_from_sku(sku: str | None) -> tuple[str | None, str | None, str | None]:
+    normalized = (sku or "").strip().lower()
+    if not normalized.startswith(PRESET_TUNNEL_PREFIX):
+        return None, None, None
+    preset_key = normalized[len(PRESET_TUNNEL_PREFIX) :]
+    mapped = PRESET_TUNNEL_NAME_MAP.get(preset_key)
+    if mapped is None:
+        return preset_key, None, None
+    return preset_key, mapped[0], mapped[1]
 
 
 def validate_name_preset_params(
@@ -480,6 +501,7 @@ def build_series_query(
     project_groups: list[str] | None = None,
     name_preset: str | None = None,
     spring_subpreset: str | None = None,
+    sku: str | None = None,
 ) -> tuple[Any | None, list[str], dict[str, str | None]]:
     if item_id is None:
         return None, [], {"min": None, "max": None}
@@ -488,6 +510,13 @@ def build_series_query(
     item_id_filters = []
     if project_groups:
         item_id_filters.append(Item.group_name.in_(project_groups))
+    if sku and not sku.strip().lower().startswith(PRESET_TUNNEL_PREFIX):
+        item_id_filters.append(
+            or_(
+                Item.canonical_sku == sku,
+                Item.sku_norm.ilike(f"%{sku}%"),
+            )
+        )
     preset_condition, _, _ = build_name_preset_condition(
         Item.name,
         name_preset=name_preset,
@@ -655,7 +684,17 @@ def get_series_v2(
     project_groups: list[str] | None = None,
     name_preset: str | None = None,
     spring_subpreset: str | None = None,
+    sku: str | None = None,
 ) -> dict[str, Any]:
+    preset_key, tunnel_name_preset, tunnel_spring_subpreset = resolve_preset_tunnel_from_sku(sku)
+    logger.info("Preset tunnel: %s", preset_key)
+    if preset_key:
+        logger.info("Preset tunnel subpreset applied: %s", tunnel_spring_subpreset or tunnel_name_preset)
+    normalized_name_preset, normalized_spring_subpreset = validate_name_preset_params(
+        tunnel_name_preset if tunnel_name_preset is not None else name_preset,
+        tunnel_spring_subpreset if tunnel_name_preset is not None else spring_subpreset,
+    )
+
     stmt, resolved_warehouses, availability_range = build_series_query(
         session=session,
         item_id=item_id,
@@ -664,8 +703,9 @@ def get_series_v2(
         date_from=date_from,
         date_to=date_to,
         project_groups=project_groups,
-        name_preset=name_preset,
-        spring_subpreset=spring_subpreset,
+        name_preset=normalized_name_preset,
+        spring_subpreset=normalized_spring_subpreset,
+        sku=sku,
     )
     if stmt is None:
         return {
@@ -680,14 +720,14 @@ def get_series_v2(
 
     _, preset_debug_patterns, is_preset_filter_applied = build_name_preset_condition(
         Item.name,
-        name_preset=name_preset,
-        spring_subpreset=spring_subpreset,
+        name_preset=normalized_name_preset,
+        spring_subpreset=normalized_spring_subpreset,
     )
     logger.info(
         "Series spring preset filter status",
         extra={
-            "name_preset": name_preset,
-            "spring_subpreset": spring_subpreset,
+            "name_preset": normalized_name_preset,
+            "spring_subpreset": normalized_spring_subpreset,
             "patterns": preset_debug_patterns,
             "is_filter_applied": is_preset_filter_applied,
         },
@@ -701,8 +741,8 @@ def get_series_v2(
             "warehouses": warehouses,
             "date_from": date_from.isoformat(),
             "date_to": date_to.isoformat(),
-            "name_preset": name_preset,
-            "spring_subpreset": spring_subpreset,
+            "name_preset": normalized_name_preset,
+            "spring_subpreset": normalized_spring_subpreset,
         },
     )
 
@@ -838,13 +878,17 @@ def get_top_sales(
     item_ids_stmt = None
     preset_debug_patterns: list[str] = []
     is_preset_filter_applied = False
+    preset_key, tunnel_name_preset, tunnel_spring_subpreset = resolve_preset_tunnel_from_sku(sku)
+    logger.info("Preset tunnel: %s", preset_key)
+    if preset_key:
+        logger.info("Preset tunnel subpreset applied: %s", tunnel_spring_subpreset or tunnel_name_preset)
     normalized_name_preset, normalized_spring_subpreset = validate_name_preset_params(
-        name_preset,
-        spring_subpreset,
+        tunnel_name_preset if tunnel_name_preset is not None else name_preset,
+        tunnel_spring_subpreset if tunnel_name_preset is not None else spring_subpreset,
     )
     if sku or manufacturer or name or project or project_groups or company or name_preset:
         item_ids_stmt = select(Item.id)
-        if sku:
+        if sku and not preset_key:
             sku_filter = or_(
                 Item.canonical_sku == sku,
                 Item.sku_norm.ilike(f"%{sku}%"),

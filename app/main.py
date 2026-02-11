@@ -20,12 +20,14 @@ from fastapi.templating import Jinja2Templates
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.utils import get_column_letter
+from sqlalchemy import func, select
 from sqlalchemy.exc import NoSuchTableError, OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import text
 from starlette.requests import ClientDisconnect, Request
 
 from app.db import get_session
+from app.models import FactSnapshot
 from app.services.ingest import (
     IngestConflict,
     IngestError,
@@ -1361,6 +1363,48 @@ def range_filters(
         ),
     )
     return response_payload
+
+
+
+
+@app.get("/meta/date_range")
+def meta_date_range(
+    request: Request,
+    company: str | None = Query(default="alliance"),
+    session: Session = Depends(get_session),
+):
+    company_norm = _normalize_company(_normalize_blank(company))
+    warehouses_raw = request.query_params.get("warehouses")
+    warehouses = (
+        [value.strip() for value in warehouses_raw.split(",") if value.strip()]
+        if warehouses_raw
+        else None
+    )
+
+    stmt = select(
+        func.min(FactSnapshot.data_date).label("min_date"),
+        func.max(FactSnapshot.data_date).label("max_date"),
+    ).where(FactSnapshot.company == company_norm)
+    if warehouses:
+        stmt = stmt.where(FactSnapshot.warehouse.in_(warehouses))
+
+    row = session.execute(stmt).one()
+    payload = {
+        "min_date": row.min_date.isoformat() if row.min_date else None,
+        "max_date": row.max_date.isoformat() if row.max_date else None,
+    }
+    logger.info(
+        "Meta date range",
+        extra=safe_extra(
+            {
+                "company": company_norm,
+                "warehouses": warehouses,
+                "min_date": payload["min_date"],
+                "max_date": payload["max_date"],
+            }
+        ),
+    )
+    return payload
 
 
 @app.get("/availability")

@@ -239,17 +239,13 @@ function applyDatePreset(preset) {
   dateTo.value = formatDate(end);
 }
 
-function getRangeCacheKey({ company, warehouses, project, projectPreset, namePreset, springSubpreset }) {
+function getRangeCacheKey({ company, warehouses }) {
   const normalizedWarehouses = Array.isArray(warehouses)
     ? [...warehouses].map((value) => value.trim()).filter(Boolean).sort()
     : [];
   return JSON.stringify({
     company: company || "",
     warehouses: normalizedWarehouses,
-    project: project || "",
-    projectPreset: projectPreset || "",
-    namePreset: namePreset || "",
-    springSubpreset: springSubpreset || "",
   });
 }
 
@@ -259,26 +255,20 @@ async function resolveAllTimeRange(filters) {
     return rangeCache.get(key);
   }
   const params = new URLSearchParams();
-  appendCommonParams(params, {
-    company: filters.company,
-    warehouses: filters.warehouses,
-    project: filters.project,
-    projectPreset: filters.projectPreset,
-    namePreset: filters.namePreset,
-    springSubpreset: filters.springSubpreset,
-  });
-  const url = buildUrl(`/range?${params.toString()}`);
+  appendParam(params, "company", filters.company);
+  appendParam(params, "warehouses", filters.warehouses);
+  const url = buildUrl(`/meta/date_range?${params.toString()}`);
   const result = await safeFetch(url);
   if (!result.ok) {
-    showFriendlyMessage("Не удалось определить диапазон дат. Попробуйте ещё раз.");
+    showFriendlyMessage("Не удалось определить диапазон дат из базы. Попробуйте ещё раз.");
     return null;
   }
   const payload = result.payload || {};
-  const minDate = payload.min_date || payload.min || null;
-  const maxDate = payload.max_date || payload.max || null;
+  const minDate = payload.min_date || null;
+  const maxDate = payload.max_date || null;
   console.log("[all-time range response]", { filters, minDate, maxDate, payload });
   if (!minDate || !maxDate) {
-    showFriendlyMessage("Нет данных за выбранные фильтры");
+    showFriendlyMessage("Нет данных за выбранные склад и компанию.");
     return null;
   }
   const range = { dateFrom: minDate, dateTo: maxDate };
@@ -338,14 +328,16 @@ function appendCommonParams(params, filters = {}) {
   appendParam(params, "company", filters.company);
   appendParam(params, "warehouses", filters.warehouses);
   appendParam(params, "project", filters.project);
-  appendParam(params, "project_preset", filters.projectPreset);
-  appendParam(params, "date_from", filters.dateFrom);
-  appendParam(params, "date_to", filters.dateTo);
-  if (filters.namePreset) {
-    params.set("name_preset", filters.namePreset);
+  appendParam(params, "project_preset", filters.projectPreset ?? filters.project_preset);
+  appendParam(params, "date_from", filters.dateFrom ?? filters.date_from);
+  appendParam(params, "date_to", filters.dateTo ?? filters.date_to);
+  const namePreset = filters.name_preset ?? filters.namePreset;
+  const springSubpreset = filters.spring_subpreset ?? filters.springSubpreset;
+  if (namePreset) {
+    params.set("name_preset", namePreset);
   }
-  if (filters.springSubpreset) {
-    params.set("spring_subpreset", filters.springSubpreset);
+  if (springSubpreset) {
+    params.set("spring_subpreset", springSubpreset);
   }
 }
 
@@ -447,6 +439,8 @@ function collectFilters() {
     allTime,
     namePreset,
     springSubpreset,
+    name_preset: namePreset,
+    spring_subpreset: springSubpreset,
   };
 }
 
@@ -1398,6 +1392,7 @@ async function fetchSeriesWithParams({
   if (DEBUG) {
     console.log("[series params]", Object.fromEntries(params));
   }
+  console.log("[filters->query]", Object.fromEntries(params.entries()));
   const url = buildUrl(`/series?${params.toString()}`);
   updateSeriesDebugPanel({ url, status: "loading", points: [] });
   if (DEBUG) {
@@ -1583,6 +1578,7 @@ async function fetchTop() {
   appendParam(params, "page", topPage);
   appendParam(params, "group_by_warehouse", topGroupByWarehouse);
   console.log("TOP request params:", Object.fromEntries(params.entries()));
+  console.log("[filters->query]", Object.fromEntries(params.entries()));
   const url = buildUrl(`/top?${params.toString()}`);
   if (DEBUG) {
     console.log("topParams", {
@@ -1675,7 +1671,17 @@ applyFilters?.addEventListener("click", async (event) => {
 
 datePreset?.addEventListener("change", async (event) => {
   if (event.target.value === "all") {
-    await getResolvedFilters();
+    const filters = collectFilters();
+    const range = await resolveAllTimeRange(filters);
+    if (!range) {
+      return;
+    }
+    const dateFromInput = document.getElementById("filter-date-from");
+    const dateToInput = document.getElementById("filter-date-to");
+    if (dateFromInput) dateFromInput.value = range.dateFrom;
+    if (dateToInput) dateToInput.value = range.dateTo;
+    topPage = 1;
+    await fetchTop();
     return;
   }
   applyDatePreset(event.target.value);

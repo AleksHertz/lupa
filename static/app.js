@@ -67,6 +67,16 @@ let currentProjectPreset = null;
 let selectedNamePreset = "";
 let selectedSpringSubpreset = "";
 const rangeCache = new Map();
+const ALL_TIME_START_DATE = "2025-09-07";
+const PRESET_TUNNEL_PREFIX = "__preset__:";
+const SPRING_PRESET_TO_SENTINEL = {
+  spring_extra: "__preset__:spring_extra",
+  "spring:all": "__preset__:spring:all",
+  "spring:leaf": "__preset__:spring:leaf",
+  "spring:bushing": "__preset__:spring:bushing",
+  "spring:spring": "__preset__:spring:spring",
+  "spring:u_bolt": "__preset__:spring:u_bolt",
+};
 
 
 function setStatus(message, isError = false) {
@@ -240,12 +250,8 @@ function applyDatePreset(preset) {
 }
 
 function getRangeCacheKey({ company, warehouses }) {
-  const normalizedWarehouses = Array.isArray(warehouses)
-    ? [...warehouses].map((value) => value.trim()).filter(Boolean).sort()
-    : [];
   return JSON.stringify({
     company: company || "",
-    warehouses: normalizedWarehouses,
   });
 }
 
@@ -256,24 +262,49 @@ async function resolveAllTimeRange(filters) {
   }
   const params = new URLSearchParams();
   appendParam(params, "company", filters.company);
-  appendParam(params, "warehouses", filters.warehouses);
-  const url = buildUrl(`/meta/date_range?${params.toString()}`);
+  const url = buildUrl(`/meta/latest_date?${params.toString()}`);
   const result = await safeFetch(url);
   if (!result.ok) {
-    showFriendlyMessage("Не удалось определить диапазон дат из базы. Попробуйте ещё раз.");
+    showFriendlyMessage("Не удалось определить последнюю дату в базе. Попробуйте ещё раз.");
     return null;
   }
   const payload = result.payload || {};
-  const minDate = payload.min_date || null;
-  const maxDate = payload.max_date || null;
-  console.log("[all-time range response]", { filters, minDate, maxDate, payload });
-  if (!minDate || !maxDate) {
+  const maxDate = payload.latest_date || null;
+  console.log("[all-time range response]", { filters, minDate: ALL_TIME_START_DATE, maxDate, payload });
+  if (!maxDate) {
     showFriendlyMessage("Нет данных за выбранные склад и компанию.");
     return null;
   }
-  const range = { dateFrom: minDate, dateTo: maxDate };
+  const range = { dateFrom: ALL_TIME_START_DATE, dateTo: maxDate };
   rangeCache.set(key, range);
   return range;
+}
+
+function resolveSpringSkuSentinel() {
+  const namePreset = selectedNamePreset || "";
+  if (!namePreset) return "";
+  if (namePreset === "spring") {
+    const subpreset = selectedSpringSubpreset || "all";
+    return SPRING_PRESET_TO_SENTINEL[`spring:${subpreset}`] || SPRING_PRESET_TO_SENTINEL["spring:all"];
+  }
+  if (namePreset === "spring_extra") {
+    return SPRING_PRESET_TO_SENTINEL.spring_extra;
+  }
+  return "";
+}
+
+function syncSkuTunnelWithPreset() {
+  const skuInput = document.getElementById("filter-sku");
+  if (!skuInput) return;
+  const currentValue = (skuInput.value || "").trim();
+  const sentinel = resolveSpringSkuSentinel();
+  if (sentinel) {
+    skuInput.value = sentinel;
+    return;
+  }
+  if (currentValue.startsWith(PRESET_TUNNEL_PREFIX)) {
+    skuInput.value = "";
+  }
 }
 
 async function getResolvedFilters() {
@@ -413,6 +444,8 @@ async function downloadExcel(url, fallbackName) {
 }
 
 function collectFilters() {
+  syncNamePresetState();
+  syncSkuTunnelWithPreset();
   const sku = document.getElementById("filter-sku").value || "";
   const manufacturer = document.getElementById("filter-manufacturer").value || "";
   const company = getSelectedCompany();
@@ -422,7 +455,6 @@ function collectFilters() {
   const warehouses = getSelectedWarehouses();
   const periodPreset = datePreset?.value || "";
   const allTime = periodPreset === "all";
-  syncNamePresetState();
   const namePreset = selectedNamePreset;
   const springSubpreset = selectedSpringSubpreset;
 
@@ -1364,6 +1396,7 @@ function initWarehouseActions() {
 
 async function fetchSeriesWithParams({
   itemId,
+  sku,
   company,
   warehouses,
   dateFrom,
@@ -1389,6 +1422,7 @@ async function fetchSeriesWithParams({
     springSubpreset,
   });
   appendParam(params, "item_id", itemId);
+  appendParam(params, "sku", sku);
   if (DEBUG) {
     console.log("[series params]", Object.fromEntries(params));
   }
@@ -1492,6 +1526,7 @@ async function fetchSeriesForItem(item) {
       : null;
   await fetchSeriesWithParams({
     itemId: item?.item_id,
+    sku: resolvedFilters.sku,
     company,
     warehouses: resolvedWarehouses,
     dateFrom,
@@ -1691,10 +1726,16 @@ datePreset?.addEventListener("change", async (event) => {
 namePresetSelect?.addEventListener("change", () => {
   syncNamePresetState();
   updateSpringSubpresetVisibility();
+  syncSkuTunnelWithPreset();
+  topPage = 1;
+  fetchTop();
 });
 
 springSubpresetSelect?.addEventListener("change", () => {
   syncNamePresetState();
+  syncSkuTunnelWithPreset();
+  topPage = 1;
+  fetchTop();
 });
 
 topSearchInput?.addEventListener("input", () => {

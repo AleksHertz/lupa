@@ -45,6 +45,7 @@ from app.services.query import (
     get_suggestions,
     get_top_sales,
     resolve_project_groups,
+    resolve_preset_tunnel_from_sku,
     validate_name_preset_params,
 )
 
@@ -480,6 +481,7 @@ def series(
     item_id: int = Query(...),
     warehouses: list[str] | None = Query(default=None, alias="warehouses"),
     company: str | None = Query(default="alliance"),
+    sku: str | None = Query(default=None),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     project_preset: str | None = Query(default=None),
@@ -490,6 +492,9 @@ def series(
 ):
     warehouses = _normalize_csv_list(warehouses)
     company_norm = _normalize_company(_normalize_blank(company))
+    sku = _normalize_blank(sku)
+    preset_key, _, _ = resolve_preset_tunnel_from_sku(sku)
+    logger.info("Preset tunnel: %s", preset_key)
     project_groups = resolve_project_groups(_normalize_blank(project_preset))
     name_preset, spring_subpreset = _normalize_preset_params(
         _normalize_blank(name_preset), _normalize_blank(spring_subpreset)
@@ -533,6 +538,7 @@ def series(
             "warehouses": warehouses,
             "item_id": item_id,
             "project_preset": project_preset,
+            "sku": sku,
             "all_time": all_time_flag,
             "name_preset": name_preset,
             "spring_subpreset": spring_subpreset,
@@ -548,6 +554,7 @@ def series(
         project_groups=project_groups,
         name_preset=name_preset,
         spring_subpreset=spring_subpreset,
+        sku=sku,
     )
     logger.info(
         "Series response",
@@ -564,6 +571,7 @@ def export_series(
     item_id: int = Query(...),
     warehouses: list[str] | None = Query(default=None, alias="warehouses"),
     company: str | None = Query(default="alliance"),
+    sku: str | None = Query(default=None),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     project_preset: str | None = Query(default=None),
@@ -576,6 +584,9 @@ def export_series(
     start_time = time.perf_counter()
     warehouses = _normalize_csv_list(warehouses)
     company_norm = _normalize_company(_normalize_blank(company))
+    sku = _normalize_blank(sku)
+    preset_key, _, _ = resolve_preset_tunnel_from_sku(sku)
+    logger.info("Preset tunnel: %s", preset_key)
     project_groups = resolve_project_groups(_normalize_blank(project_preset))
     group_by_warehouse_flag = _parse_bool(group_by_warehouse, default=True)
     name_preset, spring_subpreset = _normalize_preset_params(
@@ -903,6 +914,8 @@ def top_sales(
     group_by_raw = request.query_params.get("group_by_warehouse")
     group_by_warehouse = _parse_bool(group_by_raw, default=False)
     sku = _normalize_blank(sku)
+    preset_key, _, _ = resolve_preset_tunnel_from_sku(sku)
+    logger.info("Preset tunnel: %s", preset_key)
     manufacturer = _normalize_blank(manufacturer)
     project_label = _normalize_blank(project_label)
     name = _normalize_blank(name)

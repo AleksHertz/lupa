@@ -934,6 +934,15 @@ def top_sales(
         date_to = date_from
     resolved_offset = offset if offset is not None else (page - 1) * limit
     logger.info(
+        "Top received name preset params",
+        extra=safe_extra(
+            {
+                "name_preset": name_preset,
+                "spring_subpreset": spring_subpreset,
+            }
+        ),
+    )
+    logger.info(
         "Top params",
         extra=safe_extra(
             {
@@ -1299,6 +1308,22 @@ def range_filters(
     name_preset, spring_subpreset = _normalize_preset_params(
         _normalize_blank(name_preset), _normalize_blank(spring_subpreset)
     )
+    logger.info(
+        "Range params",
+        extra=safe_extra(
+            {
+                "company": company_norm,
+                "warehouses": warehouses,
+                "sku": sku,
+                "manufacturer": manufacturer,
+                "name": name,
+                "project": project_label,
+                "project_preset": project_preset,
+                "name_preset": name_preset,
+                "spring_subpreset": spring_subpreset,
+            }
+        ),
+    )
     payload = get_snapshot_date_range(
         session=session,
         company=company_norm,
@@ -1311,10 +1336,21 @@ def range_filters(
         name_preset=name_preset,
         spring_subpreset=spring_subpreset,
     )
-    return {
+    response_payload = {
         "min_date": payload.get("min"),
         "max_date": payload.get("max"),
     }
+    logger.info(
+        "Range response",
+        extra=safe_extra(
+            {
+                "company": company_norm,
+                "min_date": response_payload["min_date"],
+                "max_date": response_payload["max_date"],
+            }
+        ),
+    )
+    return response_payload
 
 
 @app.get("/availability")

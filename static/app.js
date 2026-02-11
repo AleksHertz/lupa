@@ -85,6 +85,14 @@ function clearFetchError() {
   fetchError.style.display = "none";
 }
 
+function showFriendlyMessage(message) {
+  setFetchError({
+    url: "Фильтры",
+    status: "—",
+    body: message,
+  });
+}
+
 function updateSeriesDebugPanel({ url, status, points }) {
   if (!seriesDebug) return;
   if (seriesDebugUrl) {
@@ -258,12 +266,15 @@ async function resolveAllTimeRange(filters) {
   const url = buildUrl(`/range?${params.toString()}`);
   const result = await safeFetch(url);
   if (!result.ok) {
+    showFriendlyMessage("Не удалось определить диапазон дат. Попробуйте ещё раз.");
     return null;
   }
   const payload = result.payload || {};
   const minDate = payload.min_date || payload.min || null;
   const maxDate = payload.max_date || payload.max || null;
+  console.log("allTime range response", { filters, minDate, maxDate, payload });
   if (!minDate || !maxDate) {
+    showFriendlyMessage("Нет данных за выбранные фильтры");
     return null;
   }
   const range = { dateFrom: minDate, dateTo: maxDate };

@@ -838,6 +838,10 @@ def get_top_sales(
     item_ids_stmt = None
     preset_debug_patterns: list[str] = []
     is_preset_filter_applied = False
+    normalized_name_preset, normalized_spring_subpreset = validate_name_preset_params(
+        name_preset,
+        spring_subpreset,
+    )
     if sku or manufacturer or name or project or project_groups or company or name_preset:
         item_ids_stmt = select(Item.id)
         if sku:
@@ -856,22 +860,6 @@ def get_top_sales(
             item_ids_stmt = item_ids_stmt.where(Item.project_label == project)
         if project_groups:
             item_ids_stmt = item_ids_stmt.where(Item.group_name.in_(project_groups))
-        preset_condition, preset_debug_patterns, is_preset_filter_applied = build_name_preset_condition(
-            Item.name,
-            name_preset=name_preset,
-            spring_subpreset=spring_subpreset,
-        )
-        if preset_condition is not None:
-            item_ids_stmt = item_ids_stmt.where(preset_condition)
-            logger.debug(
-                "Top preset regex patterns",
-                extra={
-                    "name_preset": name_preset,
-                    "spring_subpreset": spring_subpreset,
-                    "patterns": preset_debug_patterns,
-                    "is_filter_applied": is_preset_filter_applied,
-                },
-            )
         if company:
             item_ids_stmt = item_ids_stmt.where(Item.company == company)
 
@@ -960,6 +948,15 @@ def get_top_sales(
     )
     if company:
         final_base_stmt = final_base_stmt.where(Item.company == company)
+    preset_condition, preset_debug_patterns, is_preset_filter_applied = build_name_preset_condition(
+        Item.name,
+        name_preset=normalized_name_preset,
+        spring_subpreset=normalized_spring_subpreset,
+    )
+    if normalized_name_preset == "spring" and preset_condition is None:
+        raise ValueError("Не удалось применить фильтр пресета рессор.")
+    if preset_condition is not None:
+        final_base_stmt = final_base_stmt.where(preset_condition)
 
     base_subq = final_base_stmt.subquery()
     data_stmt = (
@@ -988,10 +985,10 @@ def get_top_sales(
     logger.info(
         "Top spring preset filter status",
         extra={
-            "name_preset": name_preset,
-            "spring_subpreset": spring_subpreset,
+            "name_preset": normalized_name_preset,
+            "spring_subpreset": normalized_spring_subpreset,
             "patterns": preset_debug_patterns,
-            "is_filter_applied": is_preset_filter_applied,
+            "applied_name_filter": is_preset_filter_applied,
         },
     )
     logger.info(

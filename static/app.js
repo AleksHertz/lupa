@@ -1,5 +1,8 @@
 const DEBUG = true;
 
+document.title = "LUPA DEBUG 777";
+console.log("LUPA DEBUG 777 loaded");
+
 const uploadForm = document.getElementById("upload-form");
 const uploadStatus = document.getElementById("upload-status");
 const applyFilters = document.getElementById("apply-filters");
@@ -381,6 +384,19 @@ function appendCommonParams(params, filters = {}) {
   if (springSubpreset) {
     params.set("spring_subpreset", springSubpreset);
   }
+}
+
+function buildDataRequestUrl(endpoint, { commonFilters = {}, extraParams = {}, debugLabel = endpoint } = {}) {
+  const params = buildCommonParams(commonFilters);
+
+  Object.entries(extraParams).forEach(([key, value]) => {
+    appendParam(params, key, value);
+  });
+
+  const url = buildUrl(`${endpoint}?${params.toString()}`);
+  console.log(`[REQ ${debugLabel} params]`, Object.fromEntries(params.entries()));
+  console.log(`[REQ ${debugLabel} URL]`, url);
+  return { url, params };
 }
 
 function buildCommonParams(filters = {}) {
@@ -1428,7 +1444,9 @@ async function fetchSeriesWithParams({
   setChartLoadingState();
   updateSumWarehouseToggle(warehouses ?? getSelectedWarehouses());
   const resolvedCompany = company || getSelectedCompany();
-  const params = buildCommonParams({
+  const { url, params } = buildDataRequestUrl("/series", {
+    debugLabel: "/series",
+    commonFilters: {
     company: resolvedCompany,
     warehouses,
     dateFrom,
@@ -1436,15 +1454,15 @@ async function fetchSeriesWithParams({
     projectPreset,
     namePreset,
     springSubpreset,
+    },
+    extraParams: {
+      item_id: itemId,
+      sku,
+    },
   });
-  appendParam(params, "item_id", itemId);
-  appendParam(params, "sku", sku);
   if (DEBUG) {
     console.log("[series params]", Object.fromEntries(params));
   }
-  console.log("[filters->query]", Object.fromEntries(params.entries()));
-  const url = buildUrl(`/series?${params.toString()}`);
-  console.log("[REQ /series URL]", url);
   updateSeriesDebugPanel({ url, status: "loading", points: [] });
   if (DEBUG) {
     console.log("seriesParams", {
@@ -1624,7 +1642,9 @@ async function fetchTop() {
 
   topGroupByWarehouse = warehouses.length <= 1;
 
-  const params = buildCommonParams({
+  const { url, params } = buildDataRequestUrl("/top", {
+    debugLabel: "/top",
+    commonFilters: {
     company,
     project,
     projectPreset: project_preset,
@@ -1633,16 +1653,16 @@ async function fetchTop() {
     dateTo: date_to,
     namePreset: name_preset,
     springSubpreset: spring_subpreset,
+    },
+    extraParams: {
+      sku,
+      manufacturer,
+      limit: topPageSize,
+      page: topPage,
+      group_by_warehouse: topGroupByWarehouse,
+    },
   });
-  appendParam(params, "sku", sku);
-  appendParam(params, "manufacturer", manufacturer);
-  appendParam(params, "limit", topPageSize);
-  appendParam(params, "page", topPage);
-  appendParam(params, "group_by_warehouse", topGroupByWarehouse);
   console.log("TOP request params:", Object.fromEntries(params.entries()));
-  console.log("[filters->query]", Object.fromEntries(params.entries()));
-  const url = buildUrl(`/top?${params.toString()}`);
-  console.log("[REQ /top URL]", url);
   if (DEBUG) {
     console.log("topParams", {
       sku,

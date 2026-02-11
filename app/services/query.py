@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from cachetools import TTLCache
-from sqlalchemy import and_, func, literal, or_, select
+from sqlalchemy import and_, func, literal, not_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import FactDeltaChange, FactSnapshot, Item
@@ -60,6 +60,180 @@ def resolve_project_groups(preset: str | None) -> list[str] | None:
 SERIES_CACHE = TTLCache(maxsize=256, ttl=300)
 SUGGESTION_CACHE = TTLCache(maxsize=512, ttl=300)
 logger = logging.getLogger(__name__)
+
+SPRING_PRESET_VALUES = {"spring", "spring_extra"}
+SPRING_SUBPRESET_VALUES = {"all", "leaf", "bushing", "spring", "u_bolt"}
+
+RESSOR_PATTERN = r"\\mрессор\\w*\\M"
+LEAF_PATTERN = r"\\mлист\\w*\\M"
+BUSH_PATTERN = r"\\mвтулк\\w*\\M"
+U_BOLT_PATTERN = r"\\mстремянк\\w*\\M"
+SPRING_GAP_PATTERN = r"(?:\\s+\\S+){0,6}\\s+"
+
+
+def _two_term_near_regex(term_a: str, term_b: str) -> str:
+    return (
+        f"(?:{term_a}{SPRING_GAP_PATTERN}{term_b})"
+        f"|(?:{term_b}{SPRING_GAP_PATTERN}{term_a})"
+    )
+
+
+def _spring_pair_conditions(name_column):
+    leaf_near_ressor = name_column.op("~*")(_two_term_near_regex(LEAF_PATTERN, RESSOR_PATTERN))
+    bushing_near_ressor = name_column.op("~*")(
+        _two_term_near_regex(BUSH_PATTERN, RESSOR_PATTERN)
+    )
+    u_bolt_near_ressor = name_column.op("~*")(
+        _two_term_near_regex(U_BOLT_PATTERN, RESSOR_PATTERN)
+    )
+    return leaf_near_ressor, bushing_near_ressor, u_bolt_near_ressor
+
+
+def build_name_preset_condition(
+    name_column,
+    name_preset: str | None,
+    spring_subpreset: str | None,
+):
+    if not name_preset:
+        return None, []
+
+    normalized_preset = name_preset.strip().lower()
+    normalized_subpreset = (spring_subpreset or "").strip().lower()
+
+    if normalized_preset not in SPRING_PRESET_VALUES:
+        return None, []
+
+    exclusion_conditions = [
+        not_(name_column.ilike("%турбокомпрессор%")),
+        not_(name_column.ilike("%компрессор%")),
+    ]
+    exclusion_patterns = ["NOT ILIKE %турбокомпрессор%", "NOT ILIKE %компрессор%"]
+
+    has_ressor = name_column.op("~*")(RESSOR_PATTERN)
+    leaf_near_ressor, bushing_near_ressor, u_bolt_near_ressor = _spring_pair_conditions(
+        name_column
+    )
+
+    spring_only = and_(
+        has_ressor,
+        not_(leaf_near_ressor),
+        not_(bushing_near_ressor),
+        not_(u_bolt_near_ressor),
+    )
+
+    if normalized_preset == "spring":
+        resolved_subpreset = normalized_subpreset or "all"
+        if resolved_subpreset not in SPRING_SUBPRESET_VALUES:
+            resolved_subpreset = "all"
+
+        if resolved_subpreset == "leaf":
+            base_condition = leaf_near_ressor
+            debug_patterns = [_two_term_near_regex(LEAF_PATTERN, RESSOR_PATTERN)]
+        elif resolved_subpreset == "bushing":
+            base_condition = bushing_near_ressor
+            debug_patterns = [_two_term_near_regex(BUSH_PATTERN, RESSOR_PATTERN)]
+        elif resolved_subpreset == "u_bolt":
+            base_condition = u_bolt_near_ressor
+            debug_patterns = [_two_term_near_regex(U_BOLT_PATTERN, RESSOR_PATTERN)]
+        elif resolved_subpreset == "spring":
+            base_condition = spring_only
+            debug_patterns = [
+                RESSOR_PATTERN,
+                f"NOT {_two_term_near_regex(LEAF_PATTERN, RESSOR_PATTERN)}",
+                f"NOT {_two_term_near_regex(BUSH_PATTERN, RESSOR_PATTERN)}",
+                f"NOT {_two_term_near_regex(U_BOLT_PATTERN, RESSOR_PATTERN)}",
+            ]
+        else:
+            base_condition = or_(
+                leaf_near_ressor,
+                bushing_near_ressor,
+                u_bolt_near_ressor,
+                spring_only,
+            )
+            debug_patterns = [
+                _two_term_near_regex(LEAF_PATTERN, RESSOR_PATTERN),
+                _two_term_near_regex(BUSH_PATTERN, RESSOR_PATTERN),
+                _two_term_near_regex(U_BOLT_PATTERN, RESSOR_PATTERN),
+                "spring_only",
+            ]
+
+        return and_(base_condition, *exclusion_conditions), debug_patterns + exclusion_patterns
+
+    spring_all_condition = or_(
+        leaf_near_ressor,
+        bushing_near_ressor,
+        u_bolt_near_ressor,
+        spring_only,
+    )
+    extra_condition = and_(has_ressor, not_(spring_all_condition))
+    debug_patterns = [
+        RESSOR_PATTERN,
+        "NOT (leaf|bushing|u_bolt|spring_only)",
+    ]
+    return and_(extra_condition, *exclusion_conditions), debug_patterns + exclusion_patterns
+
+
+def get_snapshot_date_range(
+    session: Session,
+    company: str | None,
+    warehouses: list[str] | None = None,
+    sku: str | None = None,
+    manufacturer: str | None = None,
+    name: str | None = None,
+    project: str | None = None,
+    project_groups: list[str] | None = None,
+    item_id: int | None = None,
+    name_preset: str | None = None,
+    spring_subpreset: str | None = None,
+) -> dict[str, str | None]:
+    stmt = select(
+        func.min(FactSnapshot.data_date).label("min_date"),
+        func.max(FactSnapshot.data_date).label("max_date"),
+    ).select_from(FactSnapshot)
+
+    filters = []
+    if company:
+        filters.append(FactSnapshot.company == company)
+    if warehouses:
+        filters.append(FactSnapshot.warehouse.in_(warehouses))
+
+    item_filters = []
+    if item_id is not None:
+        item_filters.append(Item.id == item_id)
+    if sku:
+        item_filters.append(
+            or_(
+                Item.canonical_sku == sku,
+                Item.sku_norm.ilike(f"%{sku}%"),
+            )
+        )
+    if manufacturer:
+        item_filters.append(Item.manufacturer_norm.ilike(f"%{manufacturer}%"))
+    if name:
+        item_filters.append(Item.name.ilike(f"%{name}%"))
+    if project:
+        item_filters.append(Item.project_label == project)
+    if project_groups:
+        item_filters.append(Item.group_name.in_(project_groups))
+    preset_condition, _ = build_name_preset_condition(
+        Item.name, name_preset=name_preset, spring_subpreset=spring_subpreset
+    )
+    if preset_condition is not None:
+        item_filters.append(preset_condition)
+    if company:
+        item_filters.append(Item.company == company)
+
+    if item_filters:
+        item_ids_stmt = select(Item.id).where(*item_filters)
+        filters.append(FactSnapshot.item_id.in_(item_ids_stmt))
+
+    if filters:
+        stmt = stmt.where(*filters)
+    row = session.execute(stmt).one()
+    return {
+        "min": row.min_date.isoformat() if row.min_date else None,
+        "max": row.max_date.isoformat() if row.max_date else None,
+    }
 
 
 def _series_cache_key(
@@ -309,13 +483,25 @@ def build_series_query(
     date_from: date,
     date_to: date,
     project_groups: list[str] | None = None,
+    name_preset: str | None = None,
+    spring_subpreset: str | None = None,
 ) -> tuple[Any | None, list[str], dict[str, str | None]]:
     if item_id is None:
         return None, [], {"min": None, "max": None}
 
     project_item_ids_stmt = None
+    item_id_filters = []
     if project_groups:
-        project_item_ids_stmt = select(Item.id).where(Item.group_name.in_(project_groups))
+        item_id_filters.append(Item.group_name.in_(project_groups))
+    preset_condition, _ = build_name_preset_condition(
+        Item.name,
+        name_preset=name_preset,
+        spring_subpreset=spring_subpreset,
+    )
+    if preset_condition is not None:
+        item_id_filters.append(preset_condition)
+    if item_id_filters:
+        project_item_ids_stmt = select(Item.id).where(*item_id_filters)
         if company:
             project_item_ids_stmt = project_item_ids_stmt.where(Item.company == company)
 
@@ -472,6 +658,8 @@ def get_series_v2(
     date_from: date,
     date_to: date,
     project_groups: list[str] | None = None,
+    name_preset: str | None = None,
+    spring_subpreset: str | None = None,
 ) -> dict[str, Any]:
     stmt, resolved_warehouses, availability_range = build_series_query(
         session=session,
@@ -481,6 +669,8 @@ def get_series_v2(
         date_from=date_from,
         date_to=date_to,
         project_groups=project_groups,
+        name_preset=name_preset,
+        spring_subpreset=spring_subpreset,
     )
     if stmt is None:
         return {
@@ -501,6 +691,8 @@ def get_series_v2(
             "warehouses": warehouses,
             "date_from": date_from.isoformat(),
             "date_to": date_to.isoformat(),
+            "name_preset": name_preset,
+            "spring_subpreset": spring_subpreset,
         },
     )
 
@@ -629,9 +821,11 @@ def get_top_sales(
     group_by_warehouse: bool = False,
     date_from: date | None = None,
     date_to: date | None = None,
+    name_preset: str | None = None,
+    spring_subpreset: str | None = None,
 ) -> dict[str, Any]:
     item_ids_stmt = None
-    if sku or manufacturer or name or project or project_groups or company:
+    if sku or manufacturer or name or project or project_groups or company or name_preset:
         item_ids_stmt = select(Item.id)
         if sku:
             sku_filter = or_(
@@ -649,6 +843,21 @@ def get_top_sales(
             item_ids_stmt = item_ids_stmt.where(Item.project_label == project)
         if project_groups:
             item_ids_stmt = item_ids_stmt.where(Item.group_name.in_(project_groups))
+        preset_condition, preset_debug_patterns = build_name_preset_condition(
+            Item.name,
+            name_preset=name_preset,
+            spring_subpreset=spring_subpreset,
+        )
+        if preset_condition is not None:
+            item_ids_stmt = item_ids_stmt.where(preset_condition)
+            logger.debug(
+                "Top preset regex patterns",
+                extra={
+                    "name_preset": name_preset,
+                    "spring_subpreset": spring_subpreset,
+                    "patterns": preset_debug_patterns,
+                },
+            )
         if company:
             item_ids_stmt = item_ids_stmt.where(Item.company == company)
 

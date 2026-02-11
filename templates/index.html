@@ -78,6 +78,28 @@
             <option value="month">Текущий месяц</option>
           </select>
         </label>
+        <label class="inline">
+          <span>За всё время</span>
+          <input type="checkbox" id="filter-all-time" />
+        </label>
+        <label>
+          Пресеты по наименованию
+          <select id="filter-name-preset">
+            <option value="">Не выбран</option>
+            <option value="spring">Рессора</option>
+            <option value="spring_extra">Рессора доп</option>
+          </select>
+        </label>
+        <label id="filter-spring-subpreset-wrap" style="display: none;">
+          Подпресет рессоры
+          <select id="filter-spring-subpreset">
+            <option value="all" selected>Все</option>
+            <option value="leaf">Лист рессоры</option>
+            <option value="bushing">Втулка рессоры</option>
+            <option value="spring">Рессора</option>
+            <option value="u_bolt">Стремянка рессоры</option>
+          </select>
+        </label>
         <label>
           Склады
           <div class="warehouse-actions">

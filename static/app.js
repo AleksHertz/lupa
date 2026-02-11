@@ -349,6 +349,12 @@ function appendCommonParams(params, filters = {}) {
   }
 }
 
+function buildCommonParams(filters = {}) {
+  const params = new URLSearchParams();
+  appendCommonParams(params, filters);
+  return params;
+}
+
 function getSelectedWarehouses() {
   if (!warehouseList) return [];
   return Array.from(warehouseList.querySelectorAll('input[type="checkbox"]:checked'))
@@ -1379,9 +1385,7 @@ async function fetchSeriesWithParams({
   setChartLoadingState();
   updateSumWarehouseToggle(warehouses ?? getSelectedWarehouses());
   const resolvedCompany = company || getSelectedCompany();
-  const params = new URLSearchParams();
-  appendParam(params, "item_id", itemId);
-  appendCommonParams(params, {
+  const params = buildCommonParams({
     company: resolvedCompany,
     warehouses,
     dateFrom,
@@ -1390,6 +1394,7 @@ async function fetchSeriesWithParams({
     namePreset,
     springSubpreset,
   });
+  appendParam(params, "item_id", itemId);
   if (DEBUG) {
     console.log("[series params]", Object.fromEntries(params));
   }
@@ -1562,10 +1567,7 @@ async function fetchTop() {
 
   topGroupByWarehouse = warehouses.length <= 1;
 
-  const params = new URLSearchParams();
-  appendParam(params, "sku", sku);
-  appendParam(params, "manufacturer", manufacturer);
-  appendCommonParams(params, {
+  const params = buildCommonParams({
     company,
     project,
     projectPreset,
@@ -1575,12 +1577,12 @@ async function fetchTop() {
     namePreset,
     springSubpreset,
   });
+  appendParam(params, "sku", sku);
+  appendParam(params, "manufacturer", manufacturer);
   appendParam(params, "limit", topPageSize);
   appendParam(params, "page", topPage);
   appendParam(params, "group_by_warehouse", topGroupByWarehouse);
-  if (DEBUG) {
-    console.log("[top params]", Object.fromEntries(params));
-  }
+  console.log("TOP request params:", Object.fromEntries(params.entries()));
   const url = buildUrl(`/top?${params.toString()}`);
   if (DEBUG) {
     console.log("topParams", {
@@ -1740,9 +1742,7 @@ seriesExportButton?.addEventListener("click", async () => {
     });
     return;
   }
-  const search = new URLSearchParams();
-  appendParam(search, "item_id", params.itemId);
-  appendCommonParams(search, {
+  const search = buildCommonParams({
     company: params.company,
     warehouses: params.warehouses,
     dateFrom: params.dateFrom,
@@ -1751,6 +1751,7 @@ seriesExportButton?.addEventListener("click", async () => {
     namePreset: params.namePreset,
     springSubpreset: params.springSubpreset,
   });
+  appendParam(search, "item_id", params.itemId);
   appendParam(
     search,
     "group_by_warehouse",
@@ -1786,10 +1787,7 @@ topExportButton?.addEventListener("click", async () => {
     return;
   }
   const exportAll = topExportMode?.value === "all";
-  const params = new URLSearchParams();
-  appendParam(params, "sku", sku);
-  appendParam(params, "manufacturer", manufacturer);
-  appendCommonParams(params, {
+  const params = buildCommonParams({
     company,
     project,
     projectPreset,
@@ -1799,6 +1797,8 @@ topExportButton?.addEventListener("click", async () => {
     namePreset,
     springSubpreset,
   });
+  appendParam(params, "sku", sku);
+  appendParam(params, "manufacturer", manufacturer);
   appendParam(params, "limit", topPageSize);
   appendParam(params, "page", topPage);
   appendParam(params, "group_by_warehouse", topGroupByWarehouse);

@@ -64,29 +64,38 @@ logger = logging.getLogger(__name__)
 SPRING_PRESET_VALUES = {"spring", "spring_extra"}
 SPRING_SUBPRESET_VALUES = {"all", "leaf", "bushing", "spring", "u_bolt"}
 
-RESSOR_PATTERN = r"\\mрессор\\w*\\M"
-LEAF_PATTERN = r"\\mлист\\w*\\M"
-BUSH_PATTERN = r"\\mвтулк\\w*\\M"
-U_BOLT_PATTERN = r"\\mстремянк\\w*\\M"
-SPRING_GAP_PATTERN = r"(?:\\s+\\S+){0,6}\\s+"
+RESSOR = r"\\mрессор\\w*\\M"
+LEAF = r"\\mлист\\w*\\M"
+BUSH = r"\\mвтулк\\w*\\M"
+UBOLT = r"\\mстремянк\\w*\\M"
+GAP = r"(?:\\s+\\S+){0,6}\\s+"
 
 
-def _two_term_near_regex(term_a: str, term_b: str) -> str:
-    return (
-        f"(?:{term_a}{SPRING_GAP_PATTERN}{term_b})"
-        f"|(?:{term_b}{SPRING_GAP_PATTERN}{term_a})"
-    )
+def pair_pattern(term_a: str, term_b: str) -> str:
+    return f"(?:{term_a}{GAP}{term_b})|(?:{term_b}{GAP}{term_a})"
 
 
-def _spring_pair_conditions(name_column):
-    leaf_near_ressor = name_column.op("~*")(_two_term_near_regex(LEAF_PATTERN, RESSOR_PATTERN))
-    bushing_near_ressor = name_column.op("~*")(
-        _two_term_near_regex(BUSH_PATTERN, RESSOR_PATTERN)
-    )
-    u_bolt_near_ressor = name_column.op("~*")(
-        _two_term_near_regex(U_BOLT_PATTERN, RESSOR_PATTERN)
-    )
-    return leaf_near_ressor, bushing_near_ressor, u_bolt_near_ressor
+def validate_name_preset_params(
+    name_preset: str | None,
+    spring_subpreset: str | None,
+) -> tuple[str | None, str | None]:
+    normalized_preset = (name_preset or "").strip().lower()
+    normalized_subpreset = (spring_subpreset or "").strip().lower()
+
+    if not normalized_preset:
+        return None, None
+    if normalized_preset not in SPRING_PRESET_VALUES:
+        raise ValueError("Неизвестный пресет наименования.")
+
+    if normalized_preset == "spring":
+        resolved_subpreset = normalized_subpreset or "all"
+        if resolved_subpreset not in SPRING_SUBPRESET_VALUES:
+            raise ValueError("Некорректный подпресет рессоры.")
+        return normalized_preset, resolved_subpreset
+
+    if normalized_subpreset and normalized_subpreset not in SPRING_SUBPRESET_VALUES:
+        raise ValueError("Некорректный подпресет рессоры.")
+    return normalized_preset, normalized_subpreset or None
 
 
 def build_name_preset_condition(
@@ -94,25 +103,20 @@ def build_name_preset_condition(
     name_preset: str | None,
     spring_subpreset: str | None,
 ):
-    if not name_preset:
-        return None, []
-
-    normalized_preset = name_preset.strip().lower()
-    normalized_subpreset = (spring_subpreset or "").strip().lower()
-
-    if normalized_preset not in SPRING_PRESET_VALUES:
-        return None, []
-
-    exclusion_conditions = [
-        not_(name_column.ilike("%турбокомпрессор%")),
-        not_(name_column.ilike("%компрессор%")),
-    ]
-    exclusion_patterns = ["NOT ILIKE %турбокомпрессор%", "NOT ILIKE %компрессор%"]
-
-    has_ressor = name_column.op("~*")(RESSOR_PATTERN)
-    leaf_near_ressor, bushing_near_ressor, u_bolt_near_ressor = _spring_pair_conditions(
-        name_column
+    normalized_preset, normalized_subpreset = validate_name_preset_params(
+        name_preset, spring_subpreset
     )
+    if not normalized_preset:
+        return None, [], False
+
+    has_ressor = name_column.op("~*")(RESSOR)
+    leaf_pair_pattern = pair_pattern(LEAF, RESSOR)
+    bushing_pair_pattern = pair_pattern(BUSH, RESSOR)
+    ubolt_pair_pattern = pair_pattern(UBOLT, RESSOR)
+
+    leaf_near_ressor = name_column.op("~*")(leaf_pair_pattern)
+    bushing_near_ressor = name_column.op("~*")(bushing_pair_pattern)
+    u_bolt_near_ressor = name_column.op("~*")(ubolt_pair_pattern)
 
     spring_only = and_(
         has_ressor,
@@ -120,57 +124,48 @@ def build_name_preset_condition(
         not_(bushing_near_ressor),
         not_(u_bolt_near_ressor),
     )
-
-    if normalized_preset == "spring":
-        resolved_subpreset = normalized_subpreset or "all"
-        if resolved_subpreset not in SPRING_SUBPRESET_VALUES:
-            resolved_subpreset = "all"
-
-        if resolved_subpreset == "leaf":
-            base_condition = leaf_near_ressor
-            debug_patterns = [_two_term_near_regex(LEAF_PATTERN, RESSOR_PATTERN)]
-        elif resolved_subpreset == "bushing":
-            base_condition = bushing_near_ressor
-            debug_patterns = [_two_term_near_regex(BUSH_PATTERN, RESSOR_PATTERN)]
-        elif resolved_subpreset == "u_bolt":
-            base_condition = u_bolt_near_ressor
-            debug_patterns = [_two_term_near_regex(U_BOLT_PATTERN, RESSOR_PATTERN)]
-        elif resolved_subpreset == "spring":
-            base_condition = spring_only
-            debug_patterns = [
-                RESSOR_PATTERN,
-                f"NOT {_two_term_near_regex(LEAF_PATTERN, RESSOR_PATTERN)}",
-                f"NOT {_two_term_near_regex(BUSH_PATTERN, RESSOR_PATTERN)}",
-                f"NOT {_two_term_near_regex(U_BOLT_PATTERN, RESSOR_PATTERN)}",
-            ]
-        else:
-            base_condition = or_(
-                leaf_near_ressor,
-                bushing_near_ressor,
-                u_bolt_near_ressor,
-                spring_only,
-            )
-            debug_patterns = [
-                _two_term_near_regex(LEAF_PATTERN, RESSOR_PATTERN),
-                _two_term_near_regex(BUSH_PATTERN, RESSOR_PATTERN),
-                _two_term_near_regex(U_BOLT_PATTERN, RESSOR_PATTERN),
-                "spring_only",
-            ]
-
-        return and_(base_condition, *exclusion_conditions), debug_patterns + exclusion_patterns
-
-    spring_all_condition = or_(
+    spring_all = or_(
         leaf_near_ressor,
         bushing_near_ressor,
         u_bolt_near_ressor,
         spring_only,
     )
-    extra_condition = and_(has_ressor, not_(spring_all_condition))
-    debug_patterns = [
-        RESSOR_PATTERN,
-        "NOT (leaf|bushing|u_bolt|spring_only)",
-    ]
-    return and_(extra_condition, *exclusion_conditions), debug_patterns + exclusion_patterns
+
+    if normalized_preset == "spring":
+        if normalized_subpreset == "leaf":
+            base_condition = leaf_near_ressor
+            debug_patterns = [leaf_pair_pattern]
+        elif normalized_subpreset == "bushing":
+            base_condition = bushing_near_ressor
+            debug_patterns = [bushing_pair_pattern]
+        elif normalized_subpreset == "u_bolt":
+            base_condition = u_bolt_near_ressor
+            debug_patterns = [ubolt_pair_pattern]
+        elif normalized_subpreset == "spring":
+            base_condition = spring_only
+            debug_patterns = [
+                RESSOR,
+                f"NOT {leaf_pair_pattern}",
+                f"NOT {bushing_pair_pattern}",
+                f"NOT {ubolt_pair_pattern}",
+            ]
+        else:
+            base_condition = spring_all
+            debug_patterns = [
+                leaf_pair_pattern,
+                bushing_pair_pattern,
+                ubolt_pair_pattern,
+                "spring_only",
+            ]
+    else:
+        base_condition = and_(has_ressor, not_(spring_all))
+        debug_patterns = [RESSOR, "NOT spring_all"]
+
+    if base_condition is None:
+        raise ValueError("Условие фильтра рессор не сформировано.")
+
+    exclusion_condition = not_(name_column.ilike("%турбокомпрессор%"))
+    return and_(base_condition, exclusion_condition), (debug_patterns + ["NOT ILIKE %турбокомпрессор%"]), True
 
 
 def get_snapshot_date_range(
@@ -215,7 +210,7 @@ def get_snapshot_date_range(
         item_filters.append(Item.project_label == project)
     if project_groups:
         item_filters.append(Item.group_name.in_(project_groups))
-    preset_condition, _ = build_name_preset_condition(
+    preset_condition, _, _ = build_name_preset_condition(
         Item.name, name_preset=name_preset, spring_subpreset=spring_subpreset
     )
     if preset_condition is not None:
@@ -493,7 +488,7 @@ def build_series_query(
     item_id_filters = []
     if project_groups:
         item_id_filters.append(Item.group_name.in_(project_groups))
-    preset_condition, _ = build_name_preset_condition(
+    preset_condition, _, _ = build_name_preset_condition(
         Item.name,
         name_preset=name_preset,
         spring_subpreset=spring_subpreset,
@@ -683,6 +678,21 @@ def get_series_v2(
             "series": [],
         }
 
+    _, preset_debug_patterns, is_preset_filter_applied = build_name_preset_condition(
+        Item.name,
+        name_preset=name_preset,
+        spring_subpreset=spring_subpreset,
+    )
+    logger.info(
+        "Series spring preset filter status",
+        extra={
+            "name_preset": name_preset,
+            "spring_subpreset": spring_subpreset,
+            "patterns": preset_debug_patterns,
+            "is_filter_applied": is_preset_filter_applied,
+        },
+    )
+
     logger.info(
         "Series normalized params",
         extra={
@@ -825,6 +835,8 @@ def get_top_sales(
     spring_subpreset: str | None = None,
 ) -> dict[str, Any]:
     item_ids_stmt = None
+    preset_debug_patterns: list[str] = []
+    is_preset_filter_applied = False
     if sku or manufacturer or name or project or project_groups or company or name_preset:
         item_ids_stmt = select(Item.id)
         if sku:
@@ -843,7 +855,7 @@ def get_top_sales(
             item_ids_stmt = item_ids_stmt.where(Item.project_label == project)
         if project_groups:
             item_ids_stmt = item_ids_stmt.where(Item.group_name.in_(project_groups))
-        preset_condition, preset_debug_patterns = build_name_preset_condition(
+        preset_condition, preset_debug_patterns, is_preset_filter_applied = build_name_preset_condition(
             Item.name,
             name_preset=name_preset,
             spring_subpreset=spring_subpreset,
@@ -856,6 +868,7 @@ def get_top_sales(
                     "name_preset": name_preset,
                     "spring_subpreset": spring_subpreset,
                     "patterns": preset_debug_patterns,
+                    "is_filter_applied": is_preset_filter_applied,
                 },
             )
         if company:
@@ -971,6 +984,15 @@ def get_top_sales(
     total_count = session.execute(total_count_stmt).scalar_one() or 0
 
     rows = session.execute(data_stmt).mappings().all()
+    logger.info(
+        "Top spring preset filter status",
+        extra={
+            "name_preset": name_preset,
+            "spring_subpreset": spring_subpreset,
+            "patterns": preset_debug_patterns,
+            "is_filter_applied": is_preset_filter_applied,
+        },
+    )
     logger.info(
         "Top sales result summary",
         extra={"rows_count": len(rows), "total_count": total_count},

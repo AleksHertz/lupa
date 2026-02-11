@@ -29,6 +29,7 @@ export DATABASE_URL="postgresql+psycopg2://user:pass@localhost:5432/dbname"
 alembic upgrade head
 uvicorn app.main:app --reload
 ```
+> По умолчанию `start.sh` **не** запускает миграции. Для явного запуска миграций при старте задайте `RUN_MIGRATIONS=1`.
 
 Откройте `http://localhost:8000`.
 

@@ -5,8 +5,6 @@ Revises: 0005_ingest_runs_v2
 Create Date: 2026-02-11
 """
 
-import logging
-
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -15,19 +13,10 @@ down_revision = "0005_ingest_runs_v2"
 branch_labels = None
 depends_on = None
 
-logger = logging.getLogger("alembic.runtime.migration")
-
 
 def upgrade():
-    logger.info("Applying migration 0006_drop_legacy_daily_tables")
-    logger.info("Setting lock_timeout=5s and statement_timeout=5min for legacy table drops")
-    op.execute("SET lock_timeout = '5s';")
-    op.execute("SET statement_timeout = '5min';")
-
-    logger.info("Dropping legacy table daily_snapshot (if exists)")
-    op.execute("DROP TABLE IF EXISTS daily_snapshot CASCADE;")
-    logger.info("Dropping legacy table daily_delta (if exists)")
-    op.execute("DROP TABLE IF EXISTS daily_delta CASCADE;")
+    # Legacy tables were already removed in production; keep revision as a no-op.
+    op.execute("-- noop legacy drop already done")
 
 
 def downgrade():

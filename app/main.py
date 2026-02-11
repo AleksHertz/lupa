@@ -492,6 +492,11 @@ def series(
     name_preset, spring_subpreset = _normalize_preset_params(
         _normalize_blank(name_preset), _normalize_blank(spring_subpreset)
     )
+    logger.info(
+        "Series preset params: name_preset=%s spring_subpreset=%s",
+        name_preset,
+        spring_subpreset,
+    )
     all_time_flag = _parse_bool(all_time, default=False)
     date_from = _parse_iso_date(date_from, "date_from")
     date_to = _parse_iso_date(date_to, "date_to")
@@ -906,6 +911,11 @@ def top_sales(
     company_norm = _normalize_company(_normalize_blank(company))
     name_preset, spring_subpreset = _normalize_preset_params(
         _normalize_blank(name_preset), _normalize_blank(spring_subpreset)
+    )
+    logger.info(
+        "Top preset params: name_preset=%s spring_subpreset=%s",
+        name_preset,
+        spring_subpreset,
     )
     all_time_flag = _parse_bool(all_time, default=False)
     date_from = _parse_iso_date(date_from, "date_from")

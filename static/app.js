@@ -69,6 +69,19 @@ let selectedSpringSubpreset = "";
 const rangeCache = new Map();
 const ALL_TIME_START_DATE = "2025-09-07";
 const PRESET_TUNNEL_PREFIX = "__preset__:";
+const filters = {
+  company: "alliance",
+  warehouses: [],
+  date_from: "",
+  date_to: "",
+  sku: "",
+  manufacturer: "",
+  project: "",
+  project_preset: null,
+  period_preset: "",
+  name_preset: "",
+  spring_subpreset: "",
+};
 const SPRING_PRESET_TO_SENTINEL = {
   spring_extra: "__preset__:spring_extra",
   "spring:all": "__preset__:spring:all",
@@ -281,10 +294,10 @@ async function resolveAllTimeRange(filters) {
 }
 
 function resolveSpringSkuSentinel() {
-  const namePreset = selectedNamePreset || "";
+  const namePreset = filters.name_preset || selectedNamePreset || "";
   if (!namePreset) return "";
   if (namePreset === "spring") {
-    const subpreset = selectedSpringSubpreset || "all";
+    const subpreset = filters.spring_subpreset || selectedSpringSubpreset || "all";
     return SPRING_PRESET_TO_SENTINEL[`spring:${subpreset}`] || SPRING_PRESET_TO_SENTINEL["spring:all"];
   }
   if (namePreset === "spring_extra") {
@@ -295,24 +308,25 @@ function resolveSpringSkuSentinel() {
 
 function syncSkuTunnelWithPreset() {
   const skuInput = document.getElementById("filter-sku");
-  if (!skuInput) return;
-  const currentValue = (skuInput.value || "").trim();
+  const currentValue = (filters.sku || skuInput?.value || "").trim();
   const sentinel = resolveSpringSkuSentinel();
   if (sentinel) {
-    skuInput.value = sentinel;
+    filters.sku = sentinel;
+    if (skuInput) skuInput.value = sentinel;
     return;
   }
   if (currentValue.startsWith(PRESET_TUNNEL_PREFIX)) {
-    skuInput.value = "";
+    filters.sku = "";
+    if (skuInput) skuInput.value = "";
   }
 }
 
 async function getResolvedFilters() {
-  const filters = collectFilters();
-  if (filters.periodPreset !== "all") {
-    return filters;
+  const currentFilters = collectFilters();
+  if (currentFilters.period_preset !== "all") {
+    return currentFilters;
   }
-  const range = await resolveAllTimeRange(filters);
+  const range = await resolveAllTimeRange(currentFilters);
   if (!range) {
     return null;
   }
@@ -320,12 +334,9 @@ async function getResolvedFilters() {
   const dateToInput = document.getElementById("filter-date-to");
   if (dateFromInput) dateFromInput.value = range.dateFrom;
   if (dateToInput) dateToInput.value = range.dateTo;
-  return {
-    ...filters,
-    dateFrom: range.dateFrom,
-    dateTo: range.dateTo,
-    allTime: false,
-  };
+  currentFilters.date_from = range.dateFrom;
+  currentFilters.date_to = range.dateTo;
+  return currentFilters;
 }
 
 function updateSpringSubpresetVisibility() {
@@ -445,35 +456,37 @@ async function downloadExcel(url, fallbackName) {
 
 function collectFilters() {
   syncNamePresetState();
+  filters.company = getSelectedCompany();
+  filters.warehouses = getSelectedWarehouses();
+  filters.date_from = document.getElementById("filter-date-from").value || "";
+  filters.date_to = document.getElementById("filter-date-to").value || "";
+  filters.sku = document.getElementById("filter-sku").value || "";
+  filters.manufacturer = document.getElementById("filter-manufacturer").value || "";
+  filters.project = projectInput?.value || "";
+  filters.project_preset = currentProjectPreset;
+  filters.period_preset = datePreset?.value || "";
+  filters.name_preset = selectedNamePreset;
+  filters.spring_subpreset = selectedSpringSubpreset;
   syncSkuTunnelWithPreset();
-  const sku = document.getElementById("filter-sku").value || "";
-  const manufacturer = document.getElementById("filter-manufacturer").value || "";
-  const company = getSelectedCompany();
-  const project = projectInput?.value || "";
-  const dateFrom = document.getElementById("filter-date-from").value;
-  const dateTo = document.getElementById("filter-date-to").value;
-  const warehouses = getSelectedWarehouses();
-  const periodPreset = datePreset?.value || "";
-  const allTime = periodPreset === "all";
-  const namePreset = selectedNamePreset;
-  const springSubpreset = selectedSpringSubpreset;
+  return filters;
+}
 
+function toRequestFilters(filterState) {
   return {
-    sku,
-    manufacturer,
-    company,
-    project,
-    projectPreset: currentProjectPreset,
-    warehouses,
-    dateFrom,
-    dateTo,
-    periodPreset,
-    allTime,
-    namePreset,
-    springSubpreset,
-    name_preset: namePreset,
-    spring_subpreset: springSubpreset,
+    ...filterState,
+    dateFrom: filterState.date_from,
+    dateTo: filterState.date_to,
+    projectPreset: filterState.project_preset,
+    periodPreset: filterState.period_preset,
+    allTime: filterState.period_preset === "all",
+    namePreset: filterState.name_preset,
+    springSubpreset: filterState.spring_subpreset,
   };
+}
+
+async function reloadForFilterChange() {
+  topPage = 1;
+  await fetchTop();
 }
 
 function updateProjectPresetButtons() {
@@ -656,7 +669,8 @@ function setSelectedItem(item, options = {}) {
   lastSelectedItem = item;
   updateSeriesExportButton();
   if (DEBUG) {
-    const { warehouses, dateFrom, dateTo, company, periodPreset, allTime, namePreset, springSubpreset } = collectFilters();
+    const selectedFilters = toRequestFilters(collectFilters());
+    const { warehouses, dateFrom, dateTo, company, periodPreset, allTime, namePreset, springSubpreset } = selectedFilters;
     console.debug("selected row", {
       itemId: item?.item_id,
       sku: item?.canonical_sku ?? item?.sku,
@@ -665,10 +679,10 @@ function setSelectedItem(item, options = {}) {
       warehouses,
       dateFrom,
       dateTo,
-      periodPreset,
+      periodPreset: period_preset,
       allTime,
-      namePreset,
-      springSubpreset,
+      namePreset: name_preset,
+      springSubpreset: spring_subpreset,
     });
   }
   selectedTopKey = getItemKey(item);
@@ -974,6 +988,8 @@ function renderSeries(payload) {
       const dateToInput = document.getElementById("filter-date-to");
       if (dateFromInput) dateFromInput.value = minDate;
       if (dateToInput) dateToInput.value = maxDate;
+      filters.date_from = minDate;
+      filters.date_to = maxDate;
       if (lastSeriesParams) {
         fetchSeriesWithParams({
           ...lastSeriesParams,
@@ -1428,6 +1444,7 @@ async function fetchSeriesWithParams({
   }
   console.log("[filters->query]", Object.fromEntries(params.entries()));
   const url = buildUrl(`/series?${params.toString()}`);
+  console.log("[REQ /series URL]", url);
   updateSeriesDebugPanel({ url, status: "loading", points: [] });
   if (DEBUG) {
     console.log("seriesParams", {
@@ -1514,7 +1531,17 @@ async function fetchSeriesForItem(item) {
   }
   const resolvedFilters = await getResolvedFilters();
   if (!resolvedFilters) return;
-  const { company, warehouses, dateFrom, dateTo, projectPreset, allTime, namePreset, springSubpreset } = resolvedFilters;
+  const {
+    company,
+    warehouses,
+    date_from,
+    date_to,
+    project_preset,
+    period_preset,
+    name_preset,
+    spring_subpreset,
+  } = resolvedFilters;
+  const allTime = period_preset === "all";
   const rowWarehouse =
     topGroupByWarehouse && item?.warehouse && item.warehouse !== ALL_WAREHOUSES_LABEL
       ? item.warehouse
@@ -1529,12 +1556,12 @@ async function fetchSeriesForItem(item) {
     sku: resolvedFilters.sku,
     company,
     warehouses: resolvedWarehouses,
-    dateFrom,
-    dateTo,
-    projectPreset,
+    dateFrom: date_from,
+    dateTo: date_to,
+    projectPreset: project_preset,
     allTime,
-    namePreset,
-    springSubpreset,
+    namePreset: name_preset,
+    springSubpreset: spring_subpreset,
   });
 }
 
@@ -1581,17 +1608,17 @@ async function fetchTop() {
     manufacturer,
     company,
     project,
-    projectPreset,
+    project_preset,
     warehouses,
-    dateFrom,
-    dateTo,
-    periodPreset,
-    allTime,
-    namePreset,
-    springSubpreset,
+    date_from,
+    date_to,
+    period_preset,
+    name_preset,
+    spring_subpreset,
   } = resolvedFilters;
+  const allTime = period_preset === "all";
 
-  if (!allTime && (!dateFrom || !dateTo)) {
+  if (!allTime && (!date_from || !date_to)) {
     return;
   }
 
@@ -1600,12 +1627,12 @@ async function fetchTop() {
   const params = buildCommonParams({
     company,
     project,
-    projectPreset,
+    projectPreset: project_preset,
     warehouses,
-    dateFrom,
-    dateTo,
-    namePreset,
-    springSubpreset,
+    dateFrom: date_from,
+    dateTo: date_to,
+    namePreset: name_preset,
+    springSubpreset: spring_subpreset,
   });
   appendParam(params, "sku", sku);
   appendParam(params, "manufacturer", manufacturer);
@@ -1615,23 +1642,24 @@ async function fetchTop() {
   console.log("TOP request params:", Object.fromEntries(params.entries()));
   console.log("[filters->query]", Object.fromEntries(params.entries()));
   const url = buildUrl(`/top?${params.toString()}`);
+  console.log("[REQ /top URL]", url);
   if (DEBUG) {
     console.log("topParams", {
       sku,
       manufacturer,
       company,
       project,
-      projectPreset,
+      projectPreset: project_preset,
       warehouses,
-      dateFrom,
-      dateTo,
+      dateFrom: date_from,
+      dateTo: date_to,
       page: topPage,
       pageSize: topPageSize,
       groupByWarehouse: topGroupByWarehouse,
-      periodPreset,
+      periodPreset: period_preset,
       allTime,
-      namePreset,
-      springSubpreset,
+      namePreset: name_preset,
+      springSubpreset: spring_subpreset,
     });
     console.log("topUrl", url);
   }
@@ -1671,7 +1699,17 @@ async function buildSeriesExportParams() {
   if (!lastSelectedItem?.item_id) return null;
   const resolvedFilters = await getResolvedFilters();
   if (!resolvedFilters) return;
-  const { company, warehouses, dateFrom, dateTo, projectPreset, allTime, namePreset, springSubpreset } = resolvedFilters;
+  const {
+    company,
+    warehouses,
+    date_from,
+    date_to,
+    project_preset,
+    period_preset,
+    name_preset,
+    spring_subpreset,
+  } = resolvedFilters;
+  const allTime = period_preset === "all";
   const rowWarehouse =
     topGroupByWarehouse && lastSelectedItem?.warehouse && lastSelectedItem.warehouse !== ALL_WAREHOUSES_LABEL
       ? lastSelectedItem.warehouse
@@ -1685,13 +1723,13 @@ async function buildSeriesExportParams() {
     itemId: lastSelectedItem.item_id,
     company,
     warehouses: resolvedWarehouses,
-    dateFrom,
-    dateTo,
-    projectPreset,
-    periodPreset,
+    dateFrom: date_from,
+    dateTo: date_to,
+    projectPreset: project_preset,
+    periodPreset: period_preset,
     allTime,
-    namePreset,
-    springSubpreset,
+    namePreset: name_preset,
+    springSubpreset: spring_subpreset,
   };
 }
 
@@ -1700,14 +1738,14 @@ applyFilters?.addEventListener("click", async (event) => {
   if (DEBUG) {
     console.log("filtersApplied", collectFilters());
   }
-  topPage = 1;
-  await fetchTop();
+  await reloadForFilterChange();
 });
 
 datePreset?.addEventListener("change", async (event) => {
-  if (event.target.value === "all") {
-    const filters = collectFilters();
-    const range = await resolveAllTimeRange(filters);
+  const period = event.target.value;
+  if (period === "all") {
+    const currentFilters = collectFilters();
+    const range = await resolveAllTimeRange(currentFilters);
     if (!range) {
       return;
     }
@@ -1715,27 +1753,30 @@ datePreset?.addEventListener("change", async (event) => {
     const dateToInput = document.getElementById("filter-date-to");
     if (dateFromInput) dateFromInput.value = range.dateFrom;
     if (dateToInput) dateToInput.value = range.dateTo;
-    topPage = 1;
-    await fetchTop();
+    filters.date_from = range.dateFrom;
+    filters.date_to = range.dateTo;
+    console.log("[period change]", period, filters.date_from, filters.date_to);
+    await reloadForFilterChange();
     return;
   }
-  applyDatePreset(event.target.value);
+  applyDatePreset(period);
+  collectFilters();
+  console.log("[period change]", period, filters.date_from, filters.date_to);
+  await reloadForFilterChange();
 });
 
 
 namePresetSelect?.addEventListener("change", () => {
   syncNamePresetState();
   updateSpringSubpresetVisibility();
-  syncSkuTunnelWithPreset();
-  topPage = 1;
-  fetchTop();
+  collectFilters();
+  reloadForFilterChange();
 });
 
 springSubpresetSelect?.addEventListener("change", () => {
   syncNamePresetState();
-  syncSkuTunnelWithPreset();
-  topPage = 1;
-  fetchTop();
+  collectFilters();
+  reloadForFilterChange();
 });
 
 topSearchInput?.addEventListener("input", () => {
@@ -1816,16 +1857,16 @@ topExportButton?.addEventListener("click", async () => {
     manufacturer,
     company,
     project,
-    projectPreset,
+    project_preset,
     warehouses,
-    dateFrom,
-    dateTo,
-    periodPreset,
-    allTime,
-    namePreset,
-    springSubpreset,
+    date_from,
+    date_to,
+    period_preset,
+    name_preset,
+    spring_subpreset,
   } = resolvedFilters;
-  if (!allTime && (!dateFrom || !dateTo)) {
+  const allTime = period_preset === "all";
+  if (!allTime && (!date_from || !date_to)) {
     setFetchError({
       url: "/export/top",
       status: "—",
@@ -1837,12 +1878,12 @@ topExportButton?.addEventListener("click", async () => {
   const params = buildCommonParams({
     company,
     project,
-    projectPreset,
+    projectPreset: project_preset,
     warehouses,
-    dateFrom,
-    dateTo,
-    namePreset,
-    springSubpreset,
+    dateFrom: date_from,
+    dateTo: date_to,
+    namePreset: name_preset,
+    springSubpreset: spring_subpreset,
   });
   appendParam(params, "sku", sku);
   appendParam(params, "manufacturer", manufacturer);

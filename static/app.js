@@ -18,7 +18,6 @@ const topPageNumberInput = document.getElementById("top-page-number");
 const topPageSizeSelect = document.getElementById("top-page-size");
 const topPageTotal = document.getElementById("top-page-total");
 const datePreset = document.getElementById("filter-date-preset");
-const allTimeToggle = document.getElementById("filter-all-time");
 const namePresetSelect = document.getElementById("filter-name-preset");
 const springSubpresetWrap = document.getElementById("filter-spring-subpreset-wrap");
 const springSubpresetSelect = document.getElementById("filter-spring-subpreset");
@@ -65,6 +64,8 @@ let topTotalPages = 1;
 let topGroupByWarehouse = true;
 let latestLoadedLogged = false;
 let currentProjectPreset = null;
+const rangeCache = new Map();
+
 
 function setStatus(message, isError = false) {
   uploadStatus.textContent = message;
@@ -207,8 +208,7 @@ function formatSeriesEntryForDisplay(entry) {
 }
 
 function applyDatePreset(preset) {
-  if (!preset) return;
-  if (allTimeToggle?.checked) return;
+  if (!preset || preset === "all") return;
   const today = new Date();
   const dateFrom = document.getElementById("filter-date-from");
   const dateTo = document.getElementById("filter-date-to");
@@ -229,12 +229,67 @@ function applyDatePreset(preset) {
   dateTo.value = formatDate(end);
 }
 
-function updateAllTimeState() {
-  const dateFrom = document.getElementById("filter-date-from");
-  const dateTo = document.getElementById("filter-date-to");
-  const isAllTime = allTimeToggle?.checked ?? false;
-  if (dateFrom) dateFrom.disabled = isAllTime;
-  if (dateTo) dateTo.disabled = isAllTime;
+function getRangeCacheKey({ company, warehouses, project, projectPreset, namePreset, springSubpreset }) {
+  const normalizedWarehouses = Array.isArray(warehouses)
+    ? [...warehouses].map((value) => value.trim()).filter(Boolean).sort()
+    : [];
+  return JSON.stringify({
+    company: company || "",
+    warehouses: normalizedWarehouses,
+    project: project || "",
+    projectPreset: projectPreset || "",
+    namePreset: namePreset || "",
+    springSubpreset: springSubpreset || "",
+  });
+}
+
+async function resolveAllTimeRange(filters) {
+  const key = getRangeCacheKey(filters);
+  if (rangeCache.has(key)) {
+    return rangeCache.get(key);
+  }
+  const params = new URLSearchParams();
+  appendParam(params, "company", filters.company);
+  appendParam(params, "warehouses", filters.warehouses);
+  appendParam(params, "project", filters.project);
+  appendParam(params, "project_preset", filters.projectPreset);
+  appendParam(params, "name_preset", filters.namePreset);
+  appendParam(params, "spring_subpreset", filters.springSubpreset);
+  const url = buildUrl(`/range?${params.toString()}`);
+  const result = await safeFetch(url);
+  if (!result.ok) {
+    return null;
+  }
+  const payload = result.payload || {};
+  const minDate = payload.min_date || payload.min || null;
+  const maxDate = payload.max_date || payload.max || null;
+  if (!minDate || !maxDate) {
+    return null;
+  }
+  const range = { dateFrom: minDate, dateTo: maxDate };
+  rangeCache.set(key, range);
+  return range;
+}
+
+async function getResolvedFilters() {
+  const filters = collectFilters();
+  if (filters.periodPreset !== "all") {
+    return filters;
+  }
+  const range = await resolveAllTimeRange(filters);
+  if (!range) {
+    return null;
+  }
+  const dateFromInput = document.getElementById("filter-date-from");
+  const dateToInput = document.getElementById("filter-date-to");
+  if (dateFromInput) dateFromInput.value = range.dateFrom;
+  if (dateToInput) dateToInput.value = range.dateTo;
+  return {
+    ...filters,
+    dateFrom: range.dateFrom,
+    dateTo: range.dateTo,
+    allTime: false,
+  };
 }
 
 function updateSpringSubpresetVisibility() {
@@ -321,7 +376,8 @@ function collectFilters() {
   const dateFrom = document.getElementById("filter-date-from").value;
   const dateTo = document.getElementById("filter-date-to").value;
   const warehouses = getSelectedWarehouses();
-  const allTime = allTimeToggle?.checked ?? false;
+  const periodPreset = datePreset?.value || "";
+  const allTime = periodPreset === "all";
   const namePreset = namePresetSelect?.value || "";
   const springSubpreset = namePreset === "spring" ? springSubpresetSelect?.value || "all" : "";
 
@@ -334,6 +390,7 @@ function collectFilters() {
     warehouses,
     dateFrom,
     dateTo,
+    periodPreset,
     allTime,
     namePreset,
     springSubpreset,
@@ -520,7 +577,7 @@ function setSelectedItem(item, options = {}) {
   lastSelectedItem = item;
   updateSeriesExportButton();
   if (DEBUG) {
-    const { warehouses, dateFrom, dateTo, company, allTime, namePreset, springSubpreset } = collectFilters();
+    const { warehouses, dateFrom, dateTo, company, periodPreset, allTime, namePreset, springSubpreset } = collectFilters();
     console.debug("selected row", {
       itemId: item?.item_id,
       sku: item?.canonical_sku ?? item?.sku,
@@ -529,6 +586,7 @@ function setSelectedItem(item, options = {}) {
       warehouses,
       dateFrom,
       dateTo,
+      periodPreset,
       allTime,
       namePreset,
       springSubpreset,
@@ -1278,9 +1336,8 @@ async function fetchSeriesWithParams({
   appendParam(params, "item_id", itemId);
   appendParam(params, "warehouses", warehouses);
   appendParam(params, "company", resolvedCompany);
-  appendParam(params, "all_time", allTime);
-  appendParam(params, "date_from", allTime ? "" : dateFrom);
-  appendParam(params, "date_to", allTime ? "" : dateTo);
+  appendParam(params, "date_from", dateFrom);
+  appendParam(params, "date_to", dateTo);
   appendParam(params, "project_preset", projectPreset);
   appendParam(params, "name_preset", namePreset);
   appendParam(params, "spring_subpreset", springSubpreset);
@@ -1369,7 +1426,9 @@ async function fetchSeriesForItem(item) {
     setChartErrorState({ status: "—", body: "Не найден item_id для выбранной строки." });
     return;
   }
-  const { company, warehouses, dateFrom, dateTo, projectPreset, allTime, namePreset, springSubpreset } = collectFilters();
+  const resolvedFilters = await getResolvedFilters();
+  if (!resolvedFilters) return;
+  const { company, warehouses, dateFrom, dateTo, projectPreset, allTime, namePreset, springSubpreset } = resolvedFilters;
   const rowWarehouse =
     topGroupByWarehouse && item?.warehouse && item.warehouse !== ALL_WAREHOUSES_LABEL
       ? item.warehouse
@@ -1428,6 +1487,8 @@ function renderTopTable(items) {
 }
 
 async function fetchTop() {
+  const resolvedFilters = await getResolvedFilters();
+  if (!resolvedFilters) return;
   const {
     sku,
     manufacturer,
@@ -1437,10 +1498,11 @@ async function fetchTop() {
     warehouses,
     dateFrom,
     dateTo,
+    periodPreset,
     allTime,
     namePreset,
     springSubpreset,
-  } = collectFilters();
+  } = resolvedFilters;
 
   if (!allTime && (!dateFrom || !dateTo)) {
     return;
@@ -1455,9 +1517,8 @@ async function fetchTop() {
   appendParam(params, "project", project);
   appendParam(params, "project_preset", projectPreset);
   appendParam(params, "warehouses", warehouses);
-  appendParam(params, "all_time", allTime);
-  appendParam(params, "date_from", allTime ? "" : dateFrom);
-  appendParam(params, "date_to", allTime ? "" : dateTo);
+  appendParam(params, "date_from", dateFrom);
+  appendParam(params, "date_to", dateTo);
   appendParam(params, "name_preset", namePreset);
   appendParam(params, "spring_subpreset", springSubpreset);
   appendParam(params, "limit", topPageSize);
@@ -1477,6 +1538,7 @@ async function fetchTop() {
       page: topPage,
       pageSize: topPageSize,
       groupByWarehouse: topGroupByWarehouse,
+      periodPreset,
       allTime,
       namePreset,
       springSubpreset,
@@ -1515,9 +1577,11 @@ function updateSeriesExportButton() {
   seriesExportButton.disabled = !enabled;
 }
 
-function buildSeriesExportParams() {
+async function buildSeriesExportParams() {
   if (!lastSelectedItem?.item_id) return null;
-  const { company, warehouses, dateFrom, dateTo, projectPreset, allTime, namePreset, springSubpreset } = collectFilters();
+  const resolvedFilters = await getResolvedFilters();
+  if (!resolvedFilters) return;
+  const { company, warehouses, dateFrom, dateTo, projectPreset, allTime, namePreset, springSubpreset } = resolvedFilters;
   const rowWarehouse =
     topGroupByWarehouse && lastSelectedItem?.warehouse && lastSelectedItem.warehouse !== ALL_WAREHOUSES_LABEL
       ? lastSelectedItem.warehouse
@@ -1534,28 +1598,30 @@ function buildSeriesExportParams() {
     dateFrom,
     dateTo,
     projectPreset,
+    periodPreset,
     allTime,
     namePreset,
     springSubpreset,
   };
 }
 
-applyFilters?.addEventListener("click", (event) => {
+applyFilters?.addEventListener("click", async (event) => {
   event.preventDefault();
   if (DEBUG) {
     console.log("filtersApplied", collectFilters());
   }
   topPage = 1;
-  fetchTop();
+  await fetchTop();
 });
 
-datePreset?.addEventListener("change", (event) => {
+datePreset?.addEventListener("change", async (event) => {
+  if (event.target.value === "all") {
+    await getResolvedFilters();
+    return;
+  }
   applyDatePreset(event.target.value);
 });
 
-allTimeToggle?.addEventListener("change", () => {
-  updateAllTimeState();
-});
 
 namePresetSelect?.addEventListener("change", () => {
   updateSpringSubpresetVisibility();
@@ -1594,8 +1660,8 @@ topPageSizeSelect?.addEventListener("change", () => {
   fetchTop();
 });
 
-seriesExportButton?.addEventListener("click", () => {
-  const params = buildSeriesExportParams();
+seriesExportButton?.addEventListener("click", async () => {
+  const params = await buildSeriesExportParams();
   if (!params?.itemId) {
     setFetchError({
       url: "/export/series",
@@ -1616,9 +1682,8 @@ seriesExportButton?.addEventListener("click", () => {
   appendParam(search, "item_id", params.itemId);
   appendParam(search, "company", params.company);
   appendParam(search, "warehouses", params.warehouses);
-  appendParam(search, "all_time", params.allTime);
-  appendParam(search, "date_from", params.allTime ? "" : params.dateFrom);
-  appendParam(search, "date_to", params.allTime ? "" : params.dateTo);
+  appendParam(search, "date_from", params.dateFrom);
+  appendParam(search, "date_to", params.dateTo);
   appendParam(search, "project_preset", params.projectPreset);
   appendParam(search, "name_preset", params.namePreset);
   appendParam(search, "spring_subpreset", params.springSubpreset);
@@ -1631,7 +1696,9 @@ seriesExportButton?.addEventListener("click", () => {
   downloadExcel(url, "series.xlsx");
 });
 
-topExportButton?.addEventListener("click", () => {
+topExportButton?.addEventListener("click", async () => {
+  const resolvedFilters = await getResolvedFilters();
+  if (!resolvedFilters) return;
   const {
     sku,
     manufacturer,
@@ -1641,10 +1708,11 @@ topExportButton?.addEventListener("click", () => {
     warehouses,
     dateFrom,
     dateTo,
+    periodPreset,
     allTime,
     namePreset,
     springSubpreset,
-  } = collectFilters();
+  } = resolvedFilters;
   if (!allTime && (!dateFrom || !dateTo)) {
     setFetchError({
       url: "/export/top",
@@ -1661,9 +1729,8 @@ topExportButton?.addEventListener("click", () => {
   appendParam(params, "project", project);
   appendParam(params, "project_preset", projectPreset);
   appendParam(params, "warehouses", warehouses);
-  appendParam(params, "all_time", allTime);
-  appendParam(params, "date_from", allTime ? "" : dateFrom);
-  appendParam(params, "date_to", allTime ? "" : dateTo);
+  appendParam(params, "date_from", dateFrom);
+  appendParam(params, "date_to", dateTo);
   appendParam(params, "name_preset", namePreset);
   appendParam(params, "spring_subpreset", springSubpreset);
   appendParam(params, "limit", topPageSize);
@@ -1701,7 +1768,6 @@ loadWarehouseOptions();
 initWarehouseActions();
 initProjectPresets();
 fetchLatestLoadedDate();
-updateAllTimeState();
 updateSpringSubpresetVisibility();
 setChartPlaceholder();
 updateSeriesExportButton();

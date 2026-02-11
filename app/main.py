@@ -42,6 +42,7 @@ from app.services.query import (
     get_suggestions,
     get_top_sales,
     resolve_project_groups,
+    validate_name_preset_params,
 )
 
 
@@ -89,6 +90,16 @@ def _parse_iso_date(value: date | str | None, label: str) -> date | None:
             status_code=400,
             detail=f"{label} must be in YYYY-MM-DD format",
         ) from exc
+
+
+def _normalize_preset_params(
+    name_preset: str | None,
+    spring_subpreset: str | None,
+) -> tuple[str | None, str | None]:
+    try:
+        return validate_name_preset_params(name_preset, spring_subpreset)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _format_ru_date(value: date | str | None) -> str:
@@ -480,8 +491,9 @@ def series(
     warehouses = _normalize_csv_list(warehouses)
     company_norm = _normalize_company(_normalize_blank(company))
     project_groups = resolve_project_groups(_normalize_blank(project_preset))
-    name_preset = _normalize_blank(name_preset)
-    spring_subpreset = _normalize_blank(spring_subpreset)
+    name_preset, spring_subpreset = _normalize_preset_params(
+        _normalize_blank(name_preset), _normalize_blank(spring_subpreset)
+    )
     all_time_flag = _parse_bool(all_time, default=False)
     date_from = _parse_iso_date(date_from, "date_from")
     date_to = _parse_iso_date(date_to, "date_to")
@@ -561,8 +573,9 @@ def export_series(
     company_norm = _normalize_company(_normalize_blank(company))
     project_groups = resolve_project_groups(_normalize_blank(project_preset))
     group_by_warehouse_flag = _parse_bool(group_by_warehouse, default=True)
-    name_preset = _normalize_blank(name_preset)
-    spring_subpreset = _normalize_blank(spring_subpreset)
+    name_preset, spring_subpreset = _normalize_preset_params(
+        _normalize_blank(name_preset), _normalize_blank(spring_subpreset)
+    )
     all_time_flag = _parse_bool(all_time, default=False)
     if all_time_flag:
         range_payload = get_snapshot_date_range(
@@ -878,8 +891,9 @@ def top_sales(
         project_preset = None
     project_groups = resolve_project_groups(project_preset)
     company_norm = _normalize_company(_normalize_blank(company))
-    name_preset = _normalize_blank(name_preset)
-    spring_subpreset = _normalize_blank(spring_subpreset)
+    name_preset, spring_subpreset = _normalize_preset_params(
+        _normalize_blank(name_preset), _normalize_blank(spring_subpreset)
+    )
     all_time_flag = _parse_bool(all_time, default=False)
     date_from = _parse_iso_date(date_from, "date_from")
     date_to = _parse_iso_date(date_to, "date_to")
@@ -1019,8 +1033,9 @@ def export_top(
         project_preset = None
     project_groups = resolve_project_groups(project_preset)
     company_norm = _normalize_company(_normalize_blank(company))
-    name_preset = _normalize_blank(name_preset)
-    spring_subpreset = _normalize_blank(spring_subpreset)
+    name_preset, spring_subpreset = _normalize_preset_params(
+        _normalize_blank(name_preset), _normalize_blank(spring_subpreset)
+    )
     all_time_flag = _parse_bool(all_time, default=False)
     date_from = _parse_iso_date(date_from, "date_from")
     date_to = _parse_iso_date(date_to, "date_to")
@@ -1238,6 +1253,55 @@ def export_top(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": content_disposition(filename)},
     )
+
+
+@app.get("/range")
+def range_filters(
+    request: Request,
+    company: str | None = Query(default="alliance"),
+    sku: str | None = Query(default=None),
+    manufacturer: str | None = Query(default=None),
+    name: str | None = Query(default=None),
+    project_label: str | None = Query(default=None, alias="project"),
+    project_preset: str | None = Query(default=None),
+    name_preset: str | None = Query(default=None),
+    spring_subpreset: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+):
+    warehouses_raw = request.query_params.get("warehouses")
+    warehouses = (
+        [value.strip() for value in warehouses_raw.split(",") if value.strip()]
+        if warehouses_raw
+        else None
+    )
+    company_norm = _normalize_company(_normalize_blank(company))
+    sku = _normalize_blank(sku)
+    manufacturer = _normalize_blank(manufacturer)
+    name = _normalize_blank(name)
+    project_label = _normalize_blank(project_label)
+    project_preset = _normalize_blank(project_preset)
+    if project_label:
+        project_preset = None
+    project_groups = resolve_project_groups(project_preset)
+    name_preset, spring_subpreset = _normalize_preset_params(
+        _normalize_blank(name_preset), _normalize_blank(spring_subpreset)
+    )
+    payload = get_snapshot_date_range(
+        session=session,
+        company=company_norm,
+        warehouses=warehouses,
+        sku=sku,
+        manufacturer=manufacturer,
+        name=name,
+        project=project_label,
+        project_groups=project_groups,
+        name_preset=name_preset,
+        spring_subpreset=spring_subpreset,
+    )
+    return {
+        "min_date": payload.get("min"),
+        "max_date": payload.get("max"),
+    }
 
 
 @app.get("/availability")

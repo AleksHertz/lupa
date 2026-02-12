@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from cachetools import TTLCache
-from sqlalchemy import and_, func, literal, or_, select
+from sqlalchemy import and_, func, literal, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.models import FactDeltaChange, FactSnapshot, Item
@@ -51,11 +51,39 @@ PROJECT_PRESET_MAP = {
     "china": PROJECT_GROUPS["Китай"],
 }
 
+SPRING_BASE_PATTERN = r"\\bрессор[аы]?\\b"
+SPRING_SUBPRESET_PATTERNS = {
+    "leaf": r"\\bлист\\b.*\\bрессор[аы]?\\b|\\bрессор[аы]?\\b.*\\bлист\\b",
+    "bushing": r"\\bвтулк[аи]\\b.*\\bрессор[аы]?\\b|\\bрессор[аы]?\\b.*\\bвтулк[аи]\\b",
+    "u_bolt": r"\\bстремянк[аи]\\b.*\\bрессор[аы]?\\b|\\bрессор[аы]?\\b.*\\bстремянк[аи]\\b",
+    "spring": SPRING_BASE_PATTERN,
+}
+SPRING_EXTRA_EXCLUDE_KEYS = ("leaf", "bushing", "u_bolt")
+
 
 def resolve_project_groups(preset: str | None) -> list[str] | None:
     if not preset:
         return None
     return PROJECT_PRESET_MAP.get(preset.lower())
+
+
+def _resolve_spring_filter(
+    name_preset: str | None,
+    spring_subpreset: str | None,
+) -> tuple[str | None, tuple[str, ...], str | None]:
+    if name_preset == "spring":
+        if not spring_subpreset:
+            return None, (), "spring_subpreset is required for name_preset='spring'"
+        if spring_subpreset not in SPRING_SUBPRESET_PATTERNS:
+            return None, (), "spring_subpreset must be one of: leaf, bushing, u_bolt, spring"
+        return SPRING_SUBPRESET_PATTERNS[spring_subpreset], (), None
+    if name_preset == "spring_extra":
+        return (
+            SPRING_BASE_PATTERN,
+            tuple(SPRING_SUBPRESET_PATTERNS[key] for key in SPRING_EXTRA_EXCLUDE_KEYS),
+            None,
+        )
+    return None, (), None
 
 SERIES_CACHE = TTLCache(maxsize=256, ttl=300)
 SUGGESTION_CACHE = TTLCache(maxsize=512, ttl=300)
@@ -71,6 +99,8 @@ def _series_cache_key(
     company: str | None,
     date_from: date,
     date_to: date,
+    name_preset: str | None,
+    spring_subpreset: str | None,
 ) -> tuple[Any, ...]:
     return (
         item_id,
@@ -81,6 +111,8 @@ def _series_cache_key(
         company,
         date_from,
         date_to,
+        name_preset,
+        spring_subpreset,
     )
 
 
@@ -130,6 +162,8 @@ def _series_item_ids_stmt(
     manufacturer: str | None,
     project_label: str | None,
     company: str | None,
+    name_preset: str | None = None,
+    spring_subpreset: str | None = None,
 ):
     stmt = select(Item.id)
     if sku:
@@ -145,6 +179,17 @@ def _series_item_ids_stmt(
         stmt = stmt.where(Item.project_label == project_label)
     if company:
         stmt = stmt.where(Item.company == company)
+    spring_pattern, spring_exclude_patterns, spring_error = _resolve_spring_filter(name_preset, spring_subpreset)
+    if spring_error:
+        raise ValueError(spring_error)
+    if spring_pattern:
+        stmt = stmt.where(text("items.name ~* :spring_pattern")).params(
+            spring_pattern=spring_pattern
+        )
+    for idx, exclude_pattern in enumerate(spring_exclude_patterns):
+        stmt = stmt.where(text(f"NOT (items.name ~* :spring_exclude_pattern_{idx})")).params(
+            **{f"spring_exclude_pattern_{idx}": exclude_pattern}
+        )
     return stmt
 
 
@@ -158,6 +203,8 @@ def get_series(
     company: str | None,
     date_from: date,
     date_to: date,
+    name_preset: str | None = None,
+    spring_subpreset: str | None = None,
 ) -> dict[str, Any]:
     warehouses_key = tuple(sorted(warehouses)) if warehouses else None
     cache_key = _series_cache_key(
@@ -169,6 +216,8 @@ def get_series(
         company,
         date_from,
         date_to,
+        name_preset,
+        spring_subpreset,
     )
     if cache_key in SERIES_CACHE:
         return SERIES_CACHE[cache_key]
@@ -204,6 +253,8 @@ def get_series(
             manufacturer=manufacturer,
             project_label=project_label,
             company=company,
+            name_preset=name_preset,
+            spring_subpreset=spring_subpreset,
         )
         delta_stmt = delta_stmt.where(FactDeltaChange.item_id.in_(item_ids_stmt))
         snapshot_stmt = snapshot_stmt.where(FactSnapshot.item_id.in_(item_ids_stmt))
@@ -226,6 +277,8 @@ def get_series(
             manufacturer=manufacturer,
             project_label=project_label,
             company=company,
+            name_preset=name_preset,
+            spring_subpreset=spring_subpreset,
         )
         delta_dates_stmt = delta_dates_stmt.where(FactDeltaChange.item_id.in_(item_ids_stmt))
         snapshot_dates_stmt = snapshot_dates_stmt.where(
@@ -309,9 +362,30 @@ def build_series_query(
     date_from: date,
     date_to: date,
     project_groups: list[str] | None = None,
+    name_preset: str | None = None,
+    spring_subpreset: str | None = None,
 ) -> tuple[Any | None, list[str], dict[str, str | None]]:
     if item_id is None:
         return None, [], {"min": None, "max": None}
+
+    spring_pattern, spring_exclude_patterns, spring_error = _resolve_spring_filter(
+        name_preset, spring_subpreset
+    )
+    if spring_error:
+        raise ValueError(spring_error)
+    if spring_pattern:
+        item_filter_stmt = select(Item.id).where(Item.id == item_id)
+        if company:
+            item_filter_stmt = item_filter_stmt.where(Item.company == company)
+        item_filter_stmt = item_filter_stmt.where(text("items.name ~* :spring_pattern")).params(
+            spring_pattern=spring_pattern
+        )
+        for idx, exclude_pattern in enumerate(spring_exclude_patterns):
+            item_filter_stmt = item_filter_stmt.where(
+                text(f"NOT (items.name ~* :spring_exclude_pattern_{idx})")
+            ).params(**{f"spring_exclude_pattern_{idx}": exclude_pattern})
+        if session.execute(item_filter_stmt.limit(1)).scalar() is None:
+            return None, [], {"min": None, "max": None}
 
     project_item_ids_stmt = None
     if project_groups:
@@ -472,6 +546,8 @@ def get_series_v2(
     date_from: date,
     date_to: date,
     project_groups: list[str] | None = None,
+    name_preset: str | None = None,
+    spring_subpreset: str | None = None,
 ) -> dict[str, Any]:
     stmt, resolved_warehouses, availability_range = build_series_query(
         session=session,
@@ -481,6 +557,8 @@ def get_series_v2(
         date_from=date_from,
         date_to=date_to,
         project_groups=project_groups,
+        name_preset=name_preset,
+        spring_subpreset=spring_subpreset,
     )
     if stmt is None:
         return {
@@ -629,9 +707,11 @@ def get_top_sales(
     group_by_warehouse: bool = False,
     date_from: date | None = None,
     date_to: date | None = None,
+    name_preset: str | None = None,
+    spring_subpreset: str | None = None,
 ) -> dict[str, Any]:
     item_ids_stmt = None
-    if sku or manufacturer or name or project or project_groups or company:
+    if sku or manufacturer or name or project or project_groups or company or name_preset:
         item_ids_stmt = select(Item.id)
         if sku:
             sku_filter = or_(
@@ -651,6 +731,17 @@ def get_top_sales(
             item_ids_stmt = item_ids_stmt.where(Item.group_name.in_(project_groups))
         if company:
             item_ids_stmt = item_ids_stmt.where(Item.company == company)
+        spring_pattern, spring_exclude_patterns, spring_error = _resolve_spring_filter(name_preset, spring_subpreset)
+        if spring_error:
+            raise ValueError(spring_error)
+        if spring_pattern:
+            item_ids_stmt = item_ids_stmt.where(text("items.name ~* :spring_pattern")).params(
+                spring_pattern=spring_pattern
+            )
+        for idx, exclude_pattern in enumerate(spring_exclude_patterns):
+            item_ids_stmt = item_ids_stmt.where(
+                text(f"NOT (items.name ~* :spring_exclude_pattern_{idx})")
+            ).params(**{f"spring_exclude_pattern_{idx}": exclude_pattern})
 
     delta_filters = []
     if company:

@@ -10,9 +10,9 @@ const projectInput = document.getElementById("filter-project");
 const projectPresetKorea = document.getElementById("project-preset-korea");
 const projectPresetChina = document.getElementById("project-preset-china");
 const projectPresetReset = document.getElementById("project-preset-reset");
-const namePresetSelect = document.getElementById("filter-name-preset");
+const namePresetSelect = document.getElementById("name_preset");
 const springSubpresetGroup = document.getElementById("spring-subpreset-group");
-const springSubpresetSelect = document.getElementById("filter-spring-subpreset");
+const springSubpresetSelect = document.getElementById("spring_subpreset");
 const topTableBody = document.getElementById("top-table-body");
 const topSearchInput = document.getElementById("top-search");
 const topPagePrevButton = document.getElementById("top-page-prev");
@@ -297,8 +297,10 @@ function collectFilters() {
   const manufacturer = document.getElementById("filter-manufacturer").value || "";
   const company = getSelectedCompany();
   const project = projectInput?.value || "";
-  const namePreset = namePresetSelect?.value || "";
-  const springSubpreset = springSubpresetSelect?.value || "";
+  const namePresetEl = document.getElementById("name_preset");
+  const springSubEl = document.getElementById("spring_subpreset");
+  const namePreset = namePresetEl ? namePresetEl.value : "";
+  const springSubpreset = springSubEl ? springSubEl.value : "";
   const dateFrom = document.getElementById("filter-date-from").value;
   const dateTo = document.getElementById("filter-date-to").value;
   const warehouses = getSelectedWarehouses();
@@ -1265,7 +1267,7 @@ async function fetchSeriesWithParams({
   if (namePreset) {
     params.append("name_preset", namePreset);
   }
-  if (springSubpreset && namePreset === "spring") {
+  if (namePreset === "spring" && springSubpreset) {
     params.append("spring_subpreset", springSubpreset);
   }
   const url = buildUrl(`/series?${params.toString()}`);
@@ -1468,6 +1470,7 @@ async function fetchTop() {
     });
     console.log("topUrl", url);
   }
+  console.log("Top request URL:", url.toString());
   const result = await safeFetch(url);
   if (!result.response?.ok) {
     renderTopTable([]);
@@ -1598,7 +1601,7 @@ seriesExportButton?.addEventListener("click", () => {
   if (params.namePreset) {
     search.append("name_preset", params.namePreset);
   }
-  if (params.springSubpreset && params.namePreset === "spring") {
+  if (params.namePreset === "spring" && params.springSubpreset) {
     search.append("spring_subpreset", params.springSubpreset);
   }
   appendParam(
@@ -1641,7 +1644,7 @@ topExportButton?.addEventListener("click", () => {
   if (namePreset) {
     params.append("name_preset", namePreset);
   }
-  if (springSubpreset && namePreset === "spring") {
+  if (namePreset === "spring" && springSubpreset) {
     params.append("spring_subpreset", springSubpreset);
   }
   appendParam(params, "warehouses", warehouses);

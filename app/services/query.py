@@ -734,9 +734,10 @@ def get_top_sales(
     date_to: date | None = None,
     name_preset: str | None = None,
     spring_subpreset: str | None = None,
+    q: str | None = None,
 ) -> dict[str, Any]:
     item_ids_stmt = None
-    if sku or manufacturer or name or project or project_groups or company or name_preset:
+    if sku or manufacturer or name or project or project_groups or company or name_preset or q:
         item_ids_stmt = select(Item.id)
         if sku:
             sku_filter = or_(
@@ -744,6 +745,17 @@ def get_top_sales(
                 Item.sku_norm.ilike(f"%{sku}%"),
             )
             item_ids_stmt = item_ids_stmt.where(sku_filter)
+        if q:
+            query = q.strip()
+            if query:
+                q_filter = or_(
+                    Item.canonical_sku.ilike(f"%{query}%"),
+                    Item.sku_norm.ilike(f"%{query}%"),
+                    Item.mfg_sku_norm.ilike(f"%{query}%"),
+                    Item.name.ilike(f"%{query}%"),
+                    Item.manufacturer_norm.ilike(f"%{query}%"),
+                )
+                item_ids_stmt = item_ids_stmt.where(q_filter)
         if manufacturer:
             item_ids_stmt = item_ids_stmt.where(
                 Item.manufacturer_norm.ilike(f"%{manufacturer}%")

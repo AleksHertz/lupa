@@ -1,4 +1,5 @@
 const DEBUG = true;
+const DEBUG_UI = true;
 
 const uploadForm = document.getElementById("upload-form");
 const uploadStatus = document.getElementById("upload-status");
@@ -39,6 +40,10 @@ const seriesDebugSample = document.getElementById("series-debug-sample");
 const seriesExportButton = document.getElementById("series-export-button");
 const topExportButton = document.getElementById("top-export-button");
 const topExportMode = document.getElementById("top-export-mode");
+const filterDebugBadge = document.getElementById("filter-debug-badge");
+const filterDebugNamePreset = document.getElementById("filter-debug-name-preset");
+const filterDebugSpringSubpreset = document.getElementById("filter-debug-spring-subpreset");
+const filterDebugTopUrl = document.getElementById("filter-debug-top-url");
 
 const BASE_URL = window.BASE_URL ?? "";
 const buildUrl = (path) => `${BASE_URL}${path}`;
@@ -62,6 +67,8 @@ let topPage = 1;
 let topPageSize = 30;
 let topTotalPages = 1;
 let topGroupByWarehouse = true;
+let topSearchQuery = "";
+let topSearchDebounceTimer = null;
 let latestLoadedLogged = false;
 let currentProjectPreset = null;
 
@@ -118,14 +125,24 @@ function extractErrorMessage(body) {
   }
 }
 
+function withDebugHeaders(options = {}) {
+  const headers = new Headers(options?.headers || {});
+  headers.set("X-Debug-Client", "ui-v1");
+  return {
+    ...options,
+    headers,
+  };
+}
+
 async function safeFetch(url, options, expectJson = true) {
+  const requestOptions = withDebugHeaders(options);
   if (DEBUG) {
-    console.log("Fetch", url);
+    console.log("Fetch", url, requestOptions);
   }
   clearFetchError();
   let response;
   try {
-    response = await fetch(url, options);
+    response = await fetch(url, requestOptions);
   } catch (error) {
     if (DEBUG) {
       console.error("Fetch failed", { url, error });
@@ -379,13 +396,55 @@ function ensureSpringPresetOptions() {
   }
 }
 
-function appendNamePresetParams(params) {
-  const namePreset = document.getElementById("name_preset")?.value || "";
-  const springSub = document.getElementById("spring_subpreset")?.value || "";
+function appendNamePresetParams(params, namePreset, springSubpreset) {
+  const springSub = springSubpreset || "";
   if (namePreset) params.set("name_preset", namePreset);
   else params.delete("name_preset");
   if (namePreset === "spring" && springSub) params.set("spring_subpreset", springSub);
   else params.delete("spring_subpreset");
+}
+
+function updateFilterDebugBadge({ namePreset, springSubpreset, topUrl }) {
+  if (!filterDebugBadge) return;
+  if (DEBUG_UI) {
+    filterDebugBadge.hidden = false;
+  }
+  if (filterDebugNamePreset) {
+    filterDebugNamePreset.textContent = namePreset || "—";
+  }
+  if (filterDebugSpringSubpreset) {
+    filterDebugSpringSubpreset.textContent = springSubpreset || "—";
+  }
+  if (filterDebugTopUrl) {
+    filterDebugTopUrl.textContent = topUrl || "—";
+  }
+}
+
+function buildTopQueryParams(filters) {
+  const {
+    sku,
+    manufacturer,
+    company,
+    project,
+    projectPreset,
+    namePreset,
+    springSubpreset,
+    warehouses,
+    dateFrom,
+    dateTo,
+  } = filters;
+  const params = new URLSearchParams();
+  appendParam(params, "sku", sku);
+  appendParam(params, "manufacturer", manufacturer);
+  appendParam(params, "company", company);
+  appendParam(params, "project", project);
+  appendParam(params, "project_preset", projectPreset);
+  appendNamePresetParams(params, namePreset, springSubpreset);
+  appendParam(params, "warehouses", warehouses);
+  appendParam(params, "date_from", dateFrom);
+  appendParam(params, "date_to", dateTo);
+  appendParam(params, "q", topSearchQuery);
+  return params;
 }
 
 function formatNumber(value) {
@@ -517,16 +576,7 @@ function scrollToSelectedRow() {
 }
 
 function applyTopFilter() {
-  const query = normalizeText(topSearchInput?.value || "");
-  if (!query) {
-    filteredTopItems = [...topItems];
-  } else {
-    filteredTopItems = topItems.filter((item) => {
-      const sku = normalizeText(item?.canonical_sku || item?.sku || "");
-      const name = normalizeText(item?.name || "");
-      return sku.includes(query) || name.includes(query);
-    });
-  }
+  filteredTopItems = [...topItems];
   updateSelectionIndex();
   renderTopTable(filteredTopItems);
   if (selectedTopIndex >= 0) {
@@ -1296,7 +1346,7 @@ async function fetchSeriesWithParams({
   appendParam(params, "date_from", dateFrom);
   appendParam(params, "date_to", dateTo);
   appendParam(params, "project_preset", projectPreset);
-  appendNamePresetParams(params);
+  appendNamePresetParams(params, namePreset, springSubpreset);
   const url = buildUrl(`/series?${params.toString()}`);
   updateSeriesDebugPanel({ url, status: "loading", points: [] });
   if (DEBUG) {
@@ -1460,20 +1510,23 @@ async function fetchTop() {
 
   topGroupByWarehouse = warehouses.length <= 1;
 
-  const params = new URLSearchParams();
-  appendParam(params, "sku", sku);
-  appendParam(params, "manufacturer", manufacturer);
-  appendParam(params, "company", company);
-  appendParam(params, "project", project);
-  appendParam(params, "project_preset", projectPreset);
-  appendNamePresetParams(params);
-  appendParam(params, "warehouses", warehouses);
-  appendParam(params, "date_from", dateFrom);
-  appendParam(params, "date_to", dateTo);
+  const params = buildTopQueryParams({
+    sku,
+    manufacturer,
+    company,
+    project,
+    projectPreset,
+    namePreset,
+    springSubpreset,
+    warehouses,
+    dateFrom,
+    dateTo,
+  });
   appendParam(params, "limit", topPageSize);
   appendParam(params, "page", topPage);
   appendParam(params, "group_by_warehouse", topGroupByWarehouse);
   const url = buildUrl(`/top?${params.toString()}`);
+  updateFilterDebugBadge({ namePreset, springSubpreset, topUrl: url });
   if (DEBUG) {
     console.log("topParams", {
       sku,
@@ -1486,6 +1539,7 @@ async function fetchTop() {
       warehouses,
       dateFrom,
       dateTo,
+      q: topSearchQuery,
       page: topPage,
       pageSize: topPageSize,
       groupByWarehouse: topGroupByWarehouse,
@@ -1562,8 +1616,16 @@ datePreset?.addEventListener("change", (event) => {
   applyDatePreset(event.target.value);
 });
 
-topSearchInput?.addEventListener("input", () => {
-  applyTopFilter();
+topSearchInput?.addEventListener("input", (event) => {
+  const nextQuery = event.target?.value?.trim() || "";
+  topSearchQuery = nextQuery;
+  topPage = 1;
+  if (topSearchDebounceTimer) {
+    window.clearTimeout(topSearchDebounceTimer);
+  }
+  topSearchDebounceTimer = window.setTimeout(() => {
+    fetchTop();
+  }, 300);
 });
 
 topPagePrevButton?.addEventListener("click", () => {
@@ -1620,7 +1682,7 @@ seriesExportButton?.addEventListener("click", () => {
   appendParam(search, "date_from", params.dateFrom);
   appendParam(search, "date_to", params.dateTo);
   appendParam(search, "project_preset", params.projectPreset);
-  appendNamePresetParams(search);
+  appendNamePresetParams(search, params.namePreset, params.springSubpreset);
   appendParam(
     search,
     "group_by_warehouse",
@@ -1652,16 +1714,18 @@ topExportButton?.addEventListener("click", () => {
     return;
   }
   const exportAll = topExportMode?.value === "all";
-  const params = new URLSearchParams();
-  appendParam(params, "sku", sku);
-  appendParam(params, "manufacturer", manufacturer);
-  appendParam(params, "company", company);
-  appendParam(params, "project", project);
-  appendParam(params, "project_preset", projectPreset);
-  appendNamePresetParams(params);
-  appendParam(params, "warehouses", warehouses);
-  appendParam(params, "date_from", dateFrom);
-  appendParam(params, "date_to", dateTo);
+  const params = buildTopQueryParams({
+    sku,
+    manufacturer,
+    company,
+    project,
+    projectPreset,
+    namePreset,
+    springSubpreset,
+    warehouses,
+    dateFrom,
+    dateTo,
+  });
   appendParam(params, "limit", topPageSize);
   appendParam(params, "page", topPage);
   appendParam(params, "group_by_warehouse", topGroupByWarehouse);
@@ -1688,6 +1752,13 @@ sumWarehouseToggle?.addEventListener("change", () => {
 
 namePresetSelect?.addEventListener("change", () => {
   updateSpringSubpresetVisibility();
+  topPage = 1;
+  fetchTop();
+});
+
+springSubpresetSelect?.addEventListener("change", () => {
+  topPage = 1;
+  fetchTop();
 });
 
 companySwitcher?.addEventListener("change", () => {

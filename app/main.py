@@ -465,6 +465,7 @@ def upload_file(
 
 @app.get("/series")
 def series(
+    request: Request,
     item_id: int = Query(...),
     warehouses: list[str] | None = Query(default=None, alias="warehouses"),
     company: str | None = Query(default="alliance"),
@@ -494,6 +495,12 @@ def series(
         )
     if name_preset != "spring":
         spring_subpreset = None
+    logger.info(
+        "Series preset params: name_preset=%s spring_subpreset=%s",
+        name_preset,
+        spring_subpreset,
+    )
+    logger.info("Series request query_string=%s", request.url.query)
     logger.info(
         "Series params normalized",
         extra={
@@ -835,6 +842,7 @@ def top_sales(
     project_preset: str | None = Query(default=None),
     name_preset: str | None = Query(default=None),
     spring_subpreset: str | None = Query(default=None),
+    q: str | None = Query(default=None),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     session: Session = Depends(get_session),
@@ -854,6 +862,7 @@ def top_sales(
     project_preset = _normalize_blank(project_preset)
     name_preset = _normalize_blank(name_preset)
     spring_subpreset = _normalize_blank(spring_subpreset)
+    q = _normalize_blank(q)
     if name_preset not in {None, "spring", "spring_extra"}:
         raise HTTPException(status_code=400, detail="name_preset must be one of: spring, spring_extra")
     if name_preset == "spring" and spring_subpreset is None:
@@ -883,6 +892,12 @@ def top_sales(
         date_to = date_from
     resolved_offset = offset if offset is not None else (page - 1) * limit
     logger.info(
+        "Top preset params: name_preset=%s spring_subpreset=%s",
+        name_preset,
+        spring_subpreset,
+    )
+    logger.info("Top request query_string=%s", request.url.query)
+    logger.info(
         "Top params",
         extra=safe_extra(
             {
@@ -902,6 +917,7 @@ def top_sales(
                 "spring_subpreset": spring_subpreset,
                 "spring_filter_applied": name_preset in {"spring", "spring_extra"},
                 "group_by_warehouse": group_by_warehouse,
+                "q": q,
             }
         ),
     )
@@ -922,6 +938,7 @@ def top_sales(
             date_to=date_to,
             name_preset=name_preset,
             spring_subpreset=spring_subpreset,
+            q=q,
         )
     except Exception:
         logger.exception(

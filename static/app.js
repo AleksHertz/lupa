@@ -1499,6 +1499,7 @@ async function fetchSeriesWithParams({
       springSubpreset,
     });
     console.log("seriesUrl", url);
+    console.log("[FETCH SERIES URL]", url);
   }
   if (DEBUG) {
     console.debug("seriesFetchUrl", url);
@@ -1639,7 +1640,7 @@ function renderTopTable(items) {
       <td>${formatCurrency(item.last_price)}</td>
     `;
     row.addEventListener("click", () => {
-      console.log("[ROW click]", item);
+      console.log("[ROW CLICK item_id]", item?.item_id ?? null);
       setSelectedItem(item);
     });
     topTableBody.append(row);
@@ -1878,7 +1879,8 @@ topPageSizeSelect?.addEventListener("change", () => {
   fetchTop();
 });
 
-seriesExportButton?.addEventListener("click", async () => {
+seriesExportButton?.addEventListener("click", async (event) => {
+  event.stopPropagation();
   const params = await buildSeriesExportParams();
   if (!params?.itemId) {
     setFetchError({
@@ -1912,6 +1914,7 @@ seriesExportButton?.addEventListener("click", async () => {
     !(sumWarehouseToggle?.checked ?? false)
   );
   const url = buildUrl(`/export/series?${search.toString()}`);
+  console.log("[EXPORT SERIES URL]", url);
   downloadExcel(url, "series.xlsx");
 });
 

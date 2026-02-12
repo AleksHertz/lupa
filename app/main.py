@@ -159,15 +159,16 @@ def _format_price_for_width(value: int | float | Decimal) -> str:
 
 
 def _cell_display_value(value: object) -> str:
-    if isinstance(value, WriteOnlyCell):
-        cell_value = value.value
-        if value.number_format in {_PRICE_FORMAT_INT, _PRICE_FORMAT_FLOAT} and isinstance(
-            cell_value, (int, float, Decimal)
-        ):
-            return _format_price_for_width(cell_value)
-        return "" if cell_value is None else str(cell_value)
     if value is None:
         return ""
+    if isinstance(value, (int, float, Decimal)):
+        if isinstance(value, bool):
+            return str(value)
+        return f"{value}"
+    if isinstance(value, datetime):
+        return value.strftime("%d.%m.%Y %H:%M:%S")
+    if isinstance(value, date):
+        return value.strftime("%d.%m.%Y")
     return str(value)
 
 

@@ -738,7 +738,7 @@ def get_top_sales(
 ) -> dict[str, Any]:
     q_norm = (q or "").strip()
     search_pattern = f"%{q_norm}%" if q_norm else None
-    logger.info("Top search applied=%s q=%r pattern=%r", bool(q_norm), q_norm, search_pattern)
+    logger.info("Top search applied=%s q=%r pattern=%r", "yes" if q_norm else "no", q_norm, search_pattern)
 
     item_ids_stmt = None
     if sku or manufacturer or name or project or project_groups or company or name_preset or q_norm:

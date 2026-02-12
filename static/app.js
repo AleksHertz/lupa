@@ -356,6 +356,25 @@ function updateSpringSubpresetVisibility() {
   }
 }
 
+function ensureSpringPresetOptions() {
+  if (namePresetSelect) {
+    namePresetSelect.innerHTML = `
+      <option value="">Все</option>
+      <option value="spring">Рессора</option>
+    `;
+  }
+
+  if (springSubpresetSelect) {
+    springSubpresetSelect.innerHTML = `
+      <option value="">Все</option>
+      <option value="list">Лист рессоры</option>
+      <option value="bushing">Втулка рессоры</option>
+      <option value="spring">Рессора</option>
+      <option value="u_bolt">Стремянка рессоры</option>
+    `;
+  }
+}
+
 function formatNumber(value) {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return "—";
@@ -1439,11 +1458,15 @@ async function fetchTop() {
   appendParam(params, "company", company);
   appendParam(params, "project", project);
   appendParam(params, "project_preset", projectPreset);
-  if (namePreset) {
-    params.append("name_preset", namePreset);
+  const namePresetValue = document.getElementById("name_preset")?.value;
+  const springSub = document.getElementById("spring_subpreset")?.value;
+
+  if (namePresetValue) {
+    params.append("name_preset", namePresetValue);
   }
-  if (springSubpreset && namePreset === "spring") {
-    params.append("spring_subpreset", springSubpreset);
+
+  if (namePresetValue === "spring" && springSub) {
+    params.append("spring_subpreset", springSub);
   }
   appendParam(params, "warehouses", warehouses);
   appendParam(params, "date_from", dateFrom);
@@ -1470,7 +1493,7 @@ async function fetchTop() {
     });
     console.log("topUrl", url);
   }
-  console.log("Top request URL:", url.toString());
+  console.log(url.toString());
   const result = await safeFetch(url);
   if (!result.response?.ok) {
     renderTopTable([]);
@@ -1686,6 +1709,7 @@ companySwitcher?.addEventListener("change", () => {
   fetchLatestLoadedDate();
 });
 
+ensureSpringPresetOptions();
 updateSpringSubpresetVisibility();
 loadWarehouseOptions();
 initWarehouseActions();

@@ -1526,8 +1526,8 @@ async function fetchTop() {
   appendParam(params, "page", topPage);
   appendParam(params, "group_by_warehouse", topGroupByWarehouse);
   const url = buildUrl(`/top?${params.toString()}`);
-  console.log("topSearchQuery", topSearchQuery);
-  console.log("topUrlFinal", url);
+  console.log("[top] url", url);
+  console.log("[top] q", topSearchQuery);
   updateFilterDebugBadge({ namePreset, springSubpreset, topUrl: url });
   if (DEBUG) {
     console.log("topParams", {
@@ -1548,7 +1548,6 @@ async function fetchTop() {
     });
     console.log("topUrl", url);
   }
-  console.log(url.toString());
   const result = await safeFetch(url);
   if (!result.response?.ok) {
     renderTopTable([]);
@@ -1624,8 +1623,13 @@ datePreset?.addEventListener("change", (event) => {
   applyDatePreset(event.target.value);
 });
 
+if (topSearchInput) {
+  console.log("[top-search] handler attached");
+}
+
 topSearchInput?.addEventListener("input", (event) => {
   const nextQuery = event.target?.value?.trim() || "";
+  console.log("[top-search] input", nextQuery);
   if (nextQuery === topSearchQuery) {
     return;
   }

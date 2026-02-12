@@ -892,7 +892,7 @@ def top_sales(
         date_to = date_from
     resolved_offset = offset if offset is not None else (page - 1) * limit
     logger.info(
-        "Top params q=%r page=%s limit=%s company=%s warehouses=%s date_from=%s date_to=%s project_preset=%s name_preset=%s spring_subpreset=%s",
+        "Top params q=%r page=%s limit=%s company=%s warehouses=%s date_from=%s date_to=%s project=%s project_preset=%s name_preset=%s spring_subpreset=%s group_by_warehouse=%s",
         q,
         page,
         limit,
@@ -900,9 +900,11 @@ def top_sales(
         warehouses,
         date_from,
         date_to,
+        project_label,
         project_preset,
         name_preset,
         spring_subpreset,
+        group_by_warehouse,
     )
     logger.info(
         "Top preset params: name_preset=%s spring_subpreset=%s",

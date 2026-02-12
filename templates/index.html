@@ -96,6 +96,23 @@
           <input type="text" id="filter-manufacturer" placeholder="Производитель" />
         </label>
         <label>
+          Пресет по наименованию
+          <select id="filter-name-preset">
+            <option value="">Нет</option>
+            <option value="spring">Рессора</option>
+            <option value="spring_extra">Рессора доп</option>
+          </select>
+        </label>
+        <label id="spring-subpreset-group" style="display: none;">
+          Подтип рессоры
+          <select id="filter-spring-subpreset">
+            <option value="leaf">Лист рессоры</option>
+            <option value="bushing">Втулка рессоры</option>
+            <option value="u_bolt">Стремянка рессоры</option>
+            <option value="spring">Рессора</option>
+          </select>
+        </label>
+        <label>
           С
           <input type="date" id="filter-date-from" />
         </label>

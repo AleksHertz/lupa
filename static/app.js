@@ -10,6 +10,9 @@ const projectInput = document.getElementById("filter-project");
 const projectPresetKorea = document.getElementById("project-preset-korea");
 const projectPresetChina = document.getElementById("project-preset-china");
 const projectPresetReset = document.getElementById("project-preset-reset");
+const namePresetSelect = document.getElementById("filter-name-preset");
+const springSubpresetGroup = document.getElementById("spring-subpreset-group");
+const springSubpresetSelect = document.getElementById("filter-spring-subpreset");
 const topTableBody = document.getElementById("top-table-body");
 const topSearchInput = document.getElementById("top-search");
 const topPagePrevButton = document.getElementById("top-page-prev");
@@ -294,6 +297,8 @@ function collectFilters() {
   const manufacturer = document.getElementById("filter-manufacturer").value || "";
   const company = getSelectedCompany();
   const project = projectInput?.value || "";
+  const namePreset = namePresetSelect?.value || "";
+  const springSubpreset = springSubpresetSelect?.value || "";
   const dateFrom = document.getElementById("filter-date-from").value;
   const dateTo = document.getElementById("filter-date-to").value;
   const warehouses = getSelectedWarehouses();
@@ -304,6 +309,8 @@ function collectFilters() {
     company,
     project,
     projectPreset: currentProjectPreset,
+    namePreset,
+    springSubpreset,
     warehouses,
     dateFrom,
     dateTo,
@@ -337,6 +344,14 @@ function clearProjectPreset({ clearProjectInput = false } = {}) {
     projectInput.value = "";
   }
   updateProjectPresetButtons();
+}
+
+function updateSpringSubpresetVisibility() {
+  const namePreset = namePresetSelect?.value || "";
+  const shouldShow = namePreset === "spring";
+  if (springSubpresetGroup) {
+    springSubpresetGroup.style.display = shouldShow ? "" : "none";
+  }
 }
 
 function formatNumber(value) {
@@ -1231,6 +1246,8 @@ async function fetchSeriesWithParams({
   dateFrom,
   dateTo,
   projectPreset,
+  namePreset,
+  springSubpreset,
 }) {
   if (!dateFrom || !dateTo) {
     return;
@@ -1245,6 +1262,12 @@ async function fetchSeriesWithParams({
   appendParam(params, "date_from", dateFrom);
   appendParam(params, "date_to", dateTo);
   appendParam(params, "project_preset", projectPreset);
+  if (namePreset) {
+    params.append("name_preset", namePreset);
+  }
+  if (springSubpreset && namePreset === "spring") {
+    params.append("spring_subpreset", springSubpreset);
+  }
   const url = buildUrl(`/series?${params.toString()}`);
   updateSeriesDebugPanel({ url, status: "loading", points: [] });
   if (DEBUG) {
@@ -1255,6 +1278,8 @@ async function fetchSeriesWithParams({
       dateFrom,
       dateTo,
       projectPreset,
+      namePreset,
+      springSubpreset,
     });
     console.log("seriesUrl", url);
   }
@@ -1307,6 +1332,8 @@ async function fetchSeriesWithParams({
     dateFrom,
     dateTo,
     projectPreset,
+    namePreset,
+    springSubpreset,
   };
   renderSeries(result.payload);
 }
@@ -1327,7 +1354,7 @@ async function fetchSeriesForItem(item) {
     setChartErrorState({ status: "—", body: "Не найден item_id для выбранной строки." });
     return;
   }
-  const { company, warehouses, dateFrom, dateTo, projectPreset } = collectFilters();
+  const { company, warehouses, dateFrom, dateTo, projectPreset, namePreset, springSubpreset } = collectFilters();
   const rowWarehouse =
     topGroupByWarehouse && item?.warehouse && item.warehouse !== ALL_WAREHOUSES_LABEL
       ? item.warehouse
@@ -1344,6 +1371,8 @@ async function fetchSeriesForItem(item) {
     dateFrom,
     dateTo,
     projectPreset,
+    namePreset,
+    springSubpreset,
   });
 }
 
@@ -1389,6 +1418,8 @@ async function fetchTop() {
     company,
     project,
     projectPreset,
+    namePreset,
+    springSubpreset,
     warehouses,
     dateFrom,
     dateTo,
@@ -1406,6 +1437,12 @@ async function fetchTop() {
   appendParam(params, "company", company);
   appendParam(params, "project", project);
   appendParam(params, "project_preset", projectPreset);
+  if (namePreset) {
+    params.append("name_preset", namePreset);
+  }
+  if (springSubpreset && namePreset === "spring") {
+    params.append("spring_subpreset", springSubpreset);
+  }
   appendParam(params, "warehouses", warehouses);
   appendParam(params, "date_from", dateFrom);
   appendParam(params, "date_to", dateTo);
@@ -1420,6 +1457,8 @@ async function fetchTop() {
       company,
       project,
       projectPreset,
+      namePreset,
+      springSubpreset,
       warehouses,
       dateFrom,
       dateTo,
@@ -1463,7 +1502,7 @@ function updateSeriesExportButton() {
 
 function buildSeriesExportParams() {
   if (!lastSelectedItem?.item_id) return null;
-  const { company, warehouses, dateFrom, dateTo, projectPreset } = collectFilters();
+  const { company, warehouses, dateFrom, dateTo, projectPreset, namePreset, springSubpreset } = collectFilters();
   const rowWarehouse =
     topGroupByWarehouse && lastSelectedItem?.warehouse && lastSelectedItem.warehouse !== ALL_WAREHOUSES_LABEL
       ? lastSelectedItem.warehouse
@@ -1480,6 +1519,8 @@ function buildSeriesExportParams() {
     dateFrom,
     dateTo,
     projectPreset,
+    namePreset,
+    springSubpreset,
   };
 }
 
@@ -1554,6 +1595,12 @@ seriesExportButton?.addEventListener("click", () => {
   appendParam(search, "date_from", params.dateFrom);
   appendParam(search, "date_to", params.dateTo);
   appendParam(search, "project_preset", params.projectPreset);
+  if (params.namePreset) {
+    search.append("name_preset", params.namePreset);
+  }
+  if (params.springSubpreset && params.namePreset === "spring") {
+    search.append("spring_subpreset", params.springSubpreset);
+  }
   appendParam(
     search,
     "group_by_warehouse",
@@ -1570,6 +1617,8 @@ topExportButton?.addEventListener("click", () => {
     company,
     project,
     projectPreset,
+    namePreset,
+    springSubpreset,
     warehouses,
     dateFrom,
     dateTo,
@@ -1589,6 +1638,12 @@ topExportButton?.addEventListener("click", () => {
   appendParam(params, "company", company);
   appendParam(params, "project", project);
   appendParam(params, "project_preset", projectPreset);
+  if (namePreset) {
+    params.append("name_preset", namePreset);
+  }
+  if (springSubpreset && namePreset === "spring") {
+    params.append("spring_subpreset", springSubpreset);
+  }
   appendParam(params, "warehouses", warehouses);
   appendParam(params, "date_from", dateFrom);
   appendParam(params, "date_to", dateTo);
@@ -1616,13 +1671,19 @@ sumWarehouseToggle?.addEventListener("change", () => {
   }
 });
 
+namePresetSelect?.addEventListener("change", () => {
+  updateSpringSubpresetVisibility();
+});
+
 companySwitcher?.addEventListener("change", () => {
+  updateSpringSubpresetVisibility();
   loadWarehouseOptions();
   topPage = 1;
   fetchTop();
   fetchLatestLoadedDate();
 });
 
+updateSpringSubpresetVisibility();
 loadWarehouseOptions();
 initWarehouseActions();
 initProjectPresets();

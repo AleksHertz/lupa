@@ -896,7 +896,10 @@ def top_sales(
         name_preset,
         spring_subpreset,
     )
+    normalized_query_string = request.scope.get("query_string", b"").decode()
     logger.info("Top request query_string=%s", request.url.query)
+    logger.info("Top request normalized_query_string=%s", normalized_query_string)
+    logger.info("Top request q=%s", q)
     logger.info(
         "Top params",
         extra=safe_extra(

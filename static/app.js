@@ -695,10 +695,10 @@ function setSelectedItem(item, options = {}) {
       warehouses,
       dateFrom,
       dateTo,
-      periodPreset: period_preset,
+      periodPreset,
       allTime,
-      namePreset: name_preset,
-      springSubpreset: spring_subpreset,
+      namePreset,
+      springSubpreset,
     });
   }
   selectedTopKey = getItemKey(item);
@@ -715,11 +715,14 @@ function setSelectedItem(item, options = {}) {
   }
 }
 
-function setSeriesEmptyState(availableRange, onShowAvailable) {
+function setSeriesEmptyState(availableRange, onShowAvailable, options = {}) {
   const chartEl = document.getElementById("chart");
   if (!chartEl) return;
-  Plotly.purge(chartEl);
-  chartEl.innerHTML = "";
+  const preserveAxes = Boolean(options.preserveAxes);
+  if (!preserveAxes) {
+    Plotly.purge(chartEl);
+    chartEl.innerHTML = "";
+  }
 
   const wrapper = document.createElement("div");
   wrapper.className = "empty-state";
@@ -744,7 +747,11 @@ function setSeriesEmptyState(availableRange, onShowAvailable) {
     wrapper.append(button);
   }
 
-  chartEl.append(wrapper);
+  if (preserveAxes) {
+    chartEl.append(wrapper);
+  } else {
+    chartEl.append(wrapper);
+  }
 }
 
 function setChartLoadingState() {
@@ -999,6 +1006,21 @@ function renderSeries(payload) {
     if (kpiStock) kpiStock.textContent = "—";
     if (kpiPrice) kpiPrice.textContent = "—";
     if (kpiWarehouses) kpiWarehouses.textContent = "—";
+    const chartEl = document.getElementById("chart");
+    if (chartEl && window.Plotly?.newPlot) {
+      Plotly.newPlot(
+        chartEl,
+        [],
+        {
+          xaxis: { title: "Дата" },
+          yaxis: { title: "Остаток" },
+          yaxis2: { title: "Продажи/пополнения", overlaying: "y", side: "right" },
+          annotations: [{ text: "Нет данных", xref: "paper", yref: "paper", x: 0.5, y: 0.5, showarrow: false, font: { size: 16, color: "#475467" } }],
+          margin: { t: 30 },
+        },
+        { responsive: true }
+      );
+    }
     setSeriesEmptyState(payload?.available_range, (minDate, maxDate) => {
       const dateFromInput = document.getElementById("filter-date-from");
       const dateToInput = document.getElementById("filter-date-to");
@@ -1013,7 +1035,7 @@ function renderSeries(payload) {
           dateTo: maxDate,
         });
       }
-    });
+    }, { preserveAxes: true });
     return;
   }
 
@@ -1505,6 +1527,7 @@ async function fetchSeriesWithParams({
   }
   const resp = result.payload ?? {};
   const series = extractSeries(resp);
+  console.log("[SERIES response]", resp?.summary, resp?.items?.length ?? series.length);
   console.debug("SERIES RESPONSE", resp);
   console.debug("SERIES LENGTH", series?.length);
   console.debug("FIRST POINT", series?.[0]);
@@ -1569,6 +1592,7 @@ async function fetchSeriesForItem(item) {
     : warehouses.length > 0
       ? warehouses
       : null;
+  console.log("[SERIES request item_id]", item?.item_id);
   await fetchSeriesWithParams({
     itemId: item?.item_id,
     sku: resolvedFilters.sku,
@@ -1586,10 +1610,13 @@ async function fetchSeriesForItem(item) {
 function renderTopTable(items) {
   if (!topTableBody) return;
   topTableBody.innerHTML = "";
+  console.log("[TOP rows rendered]", items.length, items[0] ?? null);
   items.forEach((item) => {
     const key = getItemKey(item);
     const row = document.createElement("tr");
     row.dataset.key = key;
+    row.style.cursor = "pointer";
+    row.style.pointerEvents = "auto";
     if (item.item_id) {
       row.dataset.itemId = item.item_id;
     }
@@ -1612,11 +1639,29 @@ function renderTopTable(items) {
       <td>${formatCurrency(item.last_price)}</td>
     `;
     row.addEventListener("click", () => {
+      console.log("[ROW click]", item);
       setSelectedItem(item);
     });
     topTableBody.append(row);
   });
 }
+
+function normalizeTopRow(rawRow) {
+  const row = { ...(rawRow || {}) };
+  const normalizedItemId = row.item_id ?? row.itemId ?? row.id ?? null;
+  return {
+    ...row,
+    item_id: normalizedItemId,
+    itemId: normalizedItemId,
+    canonical_sku: row.canonical_sku ?? row.canonicalSku ?? "",
+    name: row.name ?? "",
+    warehouse: row.warehouse ?? null,
+    sold_total: row.sold_total ?? row.soldTotal ?? 0,
+    replenished_total: row.replenished_total ?? row.replenishedTotal ?? 0,
+    last_price: row.last_price ?? row.lastPrice ?? null,
+  };
+}
+
 
 async function fetchTop() {
   const resolvedFilters = await getResolvedFilters();
@@ -1689,7 +1734,8 @@ async function fetchTop() {
     return;
   }
   const payload = result.payload || {};
-  const items = Array.isArray(payload) ? payload : payload.items || [];
+  const rawItems = Array.isArray(payload) ? payload : payload.items || [];
+  const items = rawItems.map(normalizeTopRow);
   const totalCount = payload.total_count ?? payload.total ?? items.length;
   if (DEBUG) {
     console.log("topResponseSize", { rows: items.length, total: totalCount });

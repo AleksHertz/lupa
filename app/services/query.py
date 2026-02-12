@@ -1055,6 +1055,9 @@ def get_top_sales(
         data = dict(row)
         for key in required_keys:
             data.setdefault(key, None)
+        # Backward compatibility for older UI payload mappings.
+        data["itemId"] = data.get("item_id")
+        data["id"] = data.get("item_id")
         items.append(data)
     return {"items": items, "total_count": int(total_count)}
 

@@ -64,7 +64,7 @@ let filteredTopItems = [];
 let selectedTopKey = null;
 let selectedTopIndex = -1;
 let topPage = 1;
-let topPageSize = 30;
+let topPageSize = 2000;
 let topTotalPages = 1;
 let topGroupByWarehouse = true;
 let topSearchQuery = "";
@@ -1528,6 +1528,7 @@ async function fetchTop() {
   const url = buildUrl(`/top?${params.toString()}`);
   console.log("[top] url", url);
   console.log("[top] q", topSearchQuery);
+  console.log("top fetch", { limit: topPageSize, page: topPage, q: topSearchQuery });
   updateFilterDebugBadge({ namePreset, springSubpreset, topUrl: url });
   if (DEBUG) {
     console.log("topParams", {

@@ -831,7 +831,7 @@ def filter_suggestions(
 @app.get("/top")
 def top_sales(
     request: Request,
-    limit: int = Query(100, ge=1, le=2000),
+    limit: int = Query(100, ge=1, le=5000),
     page: int = Query(1, ge=1),
     offset: int | None = Query(default=None, ge=0),
     company: str | None = Query(default="alliance"),
@@ -907,9 +907,10 @@ def top_sales(
         group_by_warehouse,
     )
     logger.info(
-        "Top request filters: limit=%s page=%s company=%s warehouses=%s date_from=%s date_to=%s",
+        "Top request filters: limit=%s page=%s q=%r company=%s warehouses=%s date_from=%s date_to=%s",
         limit,
         page,
+        q,
         company_norm,
         warehouses,
         date_from,
@@ -1006,7 +1007,7 @@ def top_sales(
 @app.get("/export/top")
 def export_top(
     request: Request,
-    limit: int = Query(100, ge=1, le=2000),
+    limit: int = Query(100, ge=1, le=5000),
     page: int = Query(1, ge=1),
     company: str | None = Query(default="alliance"),
     sku: str | None = Query(default=None),

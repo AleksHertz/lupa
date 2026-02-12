@@ -52,11 +52,12 @@ PROJECT_PRESET_MAP = {
     "china": PROJECT_GROUPS["Китай"],
 }
 
-SPRING_BASE_PATTERN = r"\\bрессор[аы]?\\b"
+SPRING_BASE_PATTERN = r'(^|[^а-яё])рессор(а|ы)?([^а-яё]|$)'
+SPRING_TURBO_EXCLUDE_PATTERN = r'турбокомпрессор(а|ы|ов)?'
 SPRING_SUBPRESET_PATTERNS = {
-    "leaf": r"(\\bлист\\b.*\\bрессор[аы]?\\b)|(\\bрессор[аы]?\\b.*\\bлист\\b)",
-    "bushing": r"(\\bвтулк[аи]\\b.*\\bрессор[аы]?\\b)|(\\bрессор[аы]?\\b.*\\bвтулк[аи]\\b)",
-    "u_bolt": r"(\\bстремянк[аи]\\b.*\\bрессор[аы]?\\b)|(\\bрессор[аы]?\\b.*\\bстремянк[аи]\\b)",
+    "leaf": r"((^|[^а-яё])лист([^а-яё]|$).*(^|[^а-яё])рессор(а|ы)?([^а-яё]|$))|((^|[^а-яё])рессор(а|ы)?([^а-яё]|$).*(^|[^а-яё])лист([^а-яё]|$))",
+    "bushing": r"((^|[^а-яё])втулк[аи]([^а-яё]|$).*(^|[^а-яё])рессор(а|ы)?([^а-яё]|$))|((^|[^а-яё])рессор(а|ы)?([^а-яё]|$).*(^|[^а-яё])втулк[аи]([^а-яё]|$))",
+    "u_bolt": r"((^|[^а-яё])стремянк[аи]([^а-яё]|$).*(^|[^а-яё])рессор(а|ы)?([^а-яё]|$))|((^|[^а-яё])рессор(а|ы)?([^а-яё]|$).*(^|[^а-яё])стремянк[аи]([^а-яё]|$))",
     "spring": SPRING_BASE_PATTERN,
 }
 SPRING_EXTRA_EXCLUDE_KEYS = ("leaf", "bushing", "u_bolt")
@@ -88,6 +89,25 @@ def _resolve_spring_filter(
     return None, (), None
 
 
+
+
+def _is_spring_query(q_norm: str | None, name_preset: str | None) -> bool:
+    if name_preset in {"spring", "spring_extra"}:
+        return True
+    if not q_norm:
+        return False
+    return 'рессора' in q_norm.casefold() or 'рессоры' in q_norm.casefold()
+
+
+def _apply_spring_name_regex(stmt: Any, *, param_prefix: str, include: bool) -> tuple[Any, str | None]:
+    if not include:
+        return stmt, None
+    include_param = f"{param_prefix}_spring_word_pattern"
+    exclude_param = f"{param_prefix}_spring_exclude_pattern"
+    stmt = stmt.where(text(f"items.name ~* :{include_param}")).params(**{include_param: SPRING_BASE_PATTERN})
+    stmt = stmt.where(text(f"NOT (items.name ~* :{exclude_param})")).params(**{exclude_param: SPRING_TURBO_EXCLUDE_PATTERN})
+    return stmt, SPRING_BASE_PATTERN
+
 def apply_name_presets(stmt: Any, name_preset: str | None, spring_subpreset: str | None) -> tuple[Any, dict[str, Any]]:
     logger.info(
         "Preset tunnel received: name_preset=%s spring_subpreset=%s",
@@ -103,6 +123,10 @@ def apply_name_presets(stmt: Any, name_preset: str | None, spring_subpreset: str
     for idx, exclude_pattern in enumerate(spring_exclude_patterns):
         stmt = stmt.where(text(f"NOT (items.name ~* :spring_exclude_pattern_{idx})")).params(
             **{f"spring_exclude_pattern_{idx}": exclude_pattern}
+        )
+    if spring_pattern:
+        stmt = stmt.where(text("NOT (items.name ~* :spring_exclude_turbo_pattern)")).params(
+            spring_exclude_turbo_pattern=SPRING_TURBO_EXCLUDE_PATTERN
         )
     logger.info(
         "Spring preset applied: %s pattern=%s",
@@ -738,11 +762,13 @@ def get_top_sales(
 ) -> dict[str, Any]:
     q_norm = (q or "").strip()
     search_pattern = f"%{q_norm}%" if q_norm else None
+    spring_query_filter = _is_spring_query(q_norm, name_preset)
     logger.info(
-        "Top search input: q=%r normalized=%r filter_applied=%s",
+        "Top search input: q=%r normalized=%r filter_applied=%s spring_query_filter=%s",
         q,
         q_norm,
         bool(q_norm),
+        spring_query_filter,
     )
 
     item_ids_stmt = None
@@ -767,10 +793,12 @@ def get_top_sales(
         if company:
             item_ids_stmt = item_ids_stmt.where(Item.company == company)
         item_ids_stmt, preset_meta = apply_name_presets(item_ids_stmt, name_preset, spring_subpreset)
+        item_ids_stmt, q_spring_pattern = _apply_spring_name_regex(item_ids_stmt, param_prefix="top_item_ids", include=spring_query_filter)
         logger.info(
-            "Top spring filter applied: %s pattern=%s",
+            "Top spring filter applied: %s pattern=%s q_spring_pattern=%s",
             "yes" if preset_meta["spring_filter_applied"] else "no",
             preset_meta["pattern"] or "—",
+            q_spring_pattern or "—",
         )
         _log_spring_count_estimate(session, item_ids_stmt, name_preset, spring_subpreset)
 
@@ -863,17 +891,21 @@ def get_top_sales(
     base_stmt = final_base_stmt
 
     if q_norm:
-        q_bind = bindparam("top_search_q_pattern", value=search_pattern)
-        q_clauses = [
-            Item.canonical_sku.ilike(q_bind),
-            Item.name.ilike(q_bind),
-        ]
-        manufacturer_column = getattr(Item, "manufacturer", None)
-        if manufacturer_column is not None:
-            q_clauses.append(manufacturer_column.ilike(q_bind))
-        elif hasattr(Item, "manufacturer_norm"):
-            q_clauses.append(Item.manufacturer_norm.ilike(q_bind))
-        base_stmt = base_stmt.where(or_(*q_clauses))
+        if spring_query_filter:
+            base_stmt, q_regex = _apply_spring_name_regex(base_stmt, param_prefix="top_base", include=True)
+            logger.info("Top q spring regex applied: pattern=%s", q_regex)
+        else:
+            q_bind = bindparam("top_search_q_pattern", value=search_pattern)
+            q_clauses = [
+                Item.canonical_sku.ilike(q_bind),
+                Item.name.ilike(q_bind),
+            ]
+            manufacturer_column = getattr(Item, "manufacturer", None)
+            if manufacturer_column is not None:
+                q_clauses.append(manufacturer_column.ilike(q_bind))
+            elif hasattr(Item, "manufacturer_norm"):
+                q_clauses.append(Item.manufacturer_norm.ilike(q_bind))
+            base_stmt = base_stmt.where(or_(*q_clauses))
 
     count_subq = base_stmt.order_by(None).subquery()
     total_count = (

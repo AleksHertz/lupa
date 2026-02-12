@@ -907,6 +907,15 @@ def top_sales(
         group_by_warehouse,
     )
     logger.info(
+        "Top request filters: limit=%s page=%s company=%s warehouses=%s date_from=%s date_to=%s",
+        limit,
+        page,
+        company_norm,
+        warehouses,
+        date_from,
+        date_to,
+    )
+    logger.info(
         "Top preset params: name_preset=%s spring_subpreset=%s",
         name_preset,
         spring_subpreset,

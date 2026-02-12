@@ -1,4 +1,5 @@
 import logging
+import os
 import unicodedata
 from datetime import date, timedelta
 from typing import Any
@@ -53,12 +54,13 @@ PROJECT_PRESET_MAP = {
 
 SPRING_BASE_PATTERN = r"\\bрессор[аы]?\\b"
 SPRING_SUBPRESET_PATTERNS = {
-    "leaf": r"\\bлист\\b.*\\bрессор[аы]?\\b|\\bрессор[аы]?\\b.*\\bлист\\b",
-    "bushing": r"\\bвтулк[аи]\\b.*\\bрессор[аы]?\\b|\\bрессор[аы]?\\b.*\\bвтулк[аи]\\b",
-    "u_bolt": r"\\bстремянк[аи]\\b.*\\bрессор[аы]?\\b|\\bрессор[аы]?\\b.*\\bстремянк[аи]\\b",
+    "leaf": r"(\\bлист\\b.*\\bрессор[аы]?\\b)|(\\bрессор[аы]?\\b.*\\bлист\\b)",
+    "bushing": r"(\\bвтулк[аи]\\b.*\\bрессор[аы]?\\b)|(\\bрессор[аы]?\\b.*\\bвтулк[аи]\\b)",
+    "u_bolt": r"(\\bстремянк[аи]\\b.*\\bрессор[аы]?\\b)|(\\bрессор[аы]?\\b.*\\bстремянк[аи]\\b)",
     "spring": SPRING_BASE_PATTERN,
 }
 SPRING_EXTRA_EXCLUDE_KEYS = ("leaf", "bushing", "u_bolt")
+DEBUG_PRESET = os.getenv("DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def resolve_project_groups(preset: str | None) -> list[str] | None:
@@ -84,6 +86,46 @@ def _resolve_spring_filter(
             None,
         )
     return None, (), None
+
+
+def apply_name_presets(stmt: Any, name_preset: str | None, spring_subpreset: str | None) -> tuple[Any, dict[str, Any]]:
+    logger.info(
+        "Preset tunnel received: name_preset=%s spring_subpreset=%s",
+        name_preset,
+        spring_subpreset,
+    )
+    spring_pattern, spring_exclude_patterns, spring_error = _resolve_spring_filter(name_preset, spring_subpreset)
+    if spring_error:
+        raise ValueError(spring_error)
+    applied = bool(spring_pattern)
+    if spring_pattern:
+        stmt = stmt.where(text("items.name ~* :spring_pattern")).params(spring_pattern=spring_pattern)
+    for idx, exclude_pattern in enumerate(spring_exclude_patterns):
+        stmt = stmt.where(text(f"NOT (items.name ~* :spring_exclude_pattern_{idx})")).params(
+            **{f"spring_exclude_pattern_{idx}": exclude_pattern}
+        )
+    logger.info(
+        "Spring preset applied: %s pattern=%s",
+        "yes" if applied else "no",
+        spring_pattern or "—",
+    )
+    return stmt, {
+        "spring_filter_applied": applied,
+        "pattern": spring_pattern,
+        "exclude_patterns": spring_exclude_patterns,
+    }
+
+
+def _log_spring_count_estimate(session: Session, item_ids_stmt: Any, name_preset: str | None, spring_subpreset: str | None) -> None:
+    if not DEBUG_PRESET:
+        return
+    count_stmt = select(func.count()).select_from(item_ids_stmt.subquery())
+    count_value = int(session.execute(count_stmt).scalar() or 0)
+    logger.info(
+        "Rows after spring preset filter (count estimate): %s",
+        count_value,
+        extra={"name_preset": name_preset, "spring_subpreset": spring_subpreset},
+    )
 
 SERIES_CACHE = TTLCache(maxsize=256, ttl=300)
 SUGGESTION_CACHE = TTLCache(maxsize=512, ttl=300)
@@ -179,17 +221,7 @@ def _series_item_ids_stmt(
         stmt = stmt.where(Item.project_label == project_label)
     if company:
         stmt = stmt.where(Item.company == company)
-    spring_pattern, spring_exclude_patterns, spring_error = _resolve_spring_filter(name_preset, spring_subpreset)
-    if spring_error:
-        raise ValueError(spring_error)
-    if spring_pattern:
-        stmt = stmt.where(text("items.name ~* :spring_pattern")).params(
-            spring_pattern=spring_pattern
-        )
-    for idx, exclude_pattern in enumerate(spring_exclude_patterns):
-        stmt = stmt.where(text(f"NOT (items.name ~* :spring_exclude_pattern_{idx})")).params(
-            **{f"spring_exclude_pattern_{idx}": exclude_pattern}
-        )
+    stmt, _ = apply_name_presets(stmt, name_preset, spring_subpreset)
     return stmt
 
 
@@ -368,24 +400,17 @@ def build_series_query(
     if item_id is None:
         return None, [], {"min": None, "max": None}
 
-    spring_pattern, spring_exclude_patterns, spring_error = _resolve_spring_filter(
-        name_preset, spring_subpreset
+    item_filter_stmt = select(Item.id).where(Item.id == item_id)
+    if company:
+        item_filter_stmt = item_filter_stmt.where(Item.company == company)
+    item_filter_stmt, preset_meta = apply_name_presets(item_filter_stmt, name_preset, spring_subpreset)
+    logger.info(
+        "Series spring filter applied: %s pattern=%s",
+        "yes" if preset_meta["spring_filter_applied"] else "no",
+        preset_meta["pattern"] or "—",
     )
-    if spring_error:
-        raise ValueError(spring_error)
-    if spring_pattern:
-        item_filter_stmt = select(Item.id).where(Item.id == item_id)
-        if company:
-            item_filter_stmt = item_filter_stmt.where(Item.company == company)
-        item_filter_stmt = item_filter_stmt.where(text("items.name ~* :spring_pattern")).params(
-            spring_pattern=spring_pattern
-        )
-        for idx, exclude_pattern in enumerate(spring_exclude_patterns):
-            item_filter_stmt = item_filter_stmt.where(
-                text(f"NOT (items.name ~* :spring_exclude_pattern_{idx})")
-            ).params(**{f"spring_exclude_pattern_{idx}": exclude_pattern})
-        if session.execute(item_filter_stmt.limit(1)).scalar() is None:
-            return None, [], {"min": None, "max": None}
+    if session.execute(item_filter_stmt.limit(1)).scalar() is None:
+        return None, [], {"min": None, "max": None}
 
     project_item_ids_stmt = None
     if project_groups:
@@ -731,17 +756,13 @@ def get_top_sales(
             item_ids_stmt = item_ids_stmt.where(Item.group_name.in_(project_groups))
         if company:
             item_ids_stmt = item_ids_stmt.where(Item.company == company)
-        spring_pattern, spring_exclude_patterns, spring_error = _resolve_spring_filter(name_preset, spring_subpreset)
-        if spring_error:
-            raise ValueError(spring_error)
-        if spring_pattern:
-            item_ids_stmt = item_ids_stmt.where(text("items.name ~* :spring_pattern")).params(
-                spring_pattern=spring_pattern
-            )
-        for idx, exclude_pattern in enumerate(spring_exclude_patterns):
-            item_ids_stmt = item_ids_stmt.where(
-                text(f"NOT (items.name ~* :spring_exclude_pattern_{idx})")
-            ).params(**{f"spring_exclude_pattern_{idx}": exclude_pattern})
+        item_ids_stmt, preset_meta = apply_name_presets(item_ids_stmt, name_preset, spring_subpreset)
+        logger.info(
+            "Top spring filter applied: %s pattern=%s",
+            "yes" if preset_meta["spring_filter_applied"] else "no",
+            preset_meta["pattern"] or "—",
+        )
+        _log_spring_count_estimate(session, item_ids_stmt, name_preset, spring_subpreset)
 
     delta_filters = []
     if company:

@@ -495,16 +495,17 @@ def series(
     if name_preset != "spring":
         spring_subpreset = None
     logger.info(
-        "Series params",
+        "Series params normalized",
         extra={
             "company_norm": company_norm,
             "date_from": date_from.isoformat(),
             "date_to": date_to.isoformat(),
             "warehouses": warehouses,
             "item_id": item_id,
-            "project_preset": project_preset,
+            "project_preset": _normalize_blank(project_preset),
             "name_preset": name_preset,
             "spring_subpreset": spring_subpreset,
+            "spring_filter_applied": name_preset in {"spring", "spring_extra"},
         },
     )
     payload = get_series_v2(
@@ -536,6 +537,8 @@ def export_series(
     date_from: date = Query(...),
     date_to: date = Query(...),
     project_preset: str | None = Query(default=None),
+    name_preset: str | None = Query(default=None),
+    spring_subpreset: str | None = Query(default=None),
     group_by_warehouse: str | None = Query(default=None),
     session: Session = Depends(get_session),
 ):
@@ -543,6 +546,16 @@ def export_series(
     warehouses = _normalize_csv_list(warehouses)
     company_norm = _normalize_company(_normalize_blank(company))
     project_groups = resolve_project_groups(_normalize_blank(project_preset))
+    name_preset = _normalize_blank(name_preset)
+    spring_subpreset = _normalize_blank(spring_subpreset)
+    if name_preset not in {None, "spring", "spring_extra"}:
+        raise HTTPException(status_code=400, detail="name_preset must be one of: spring, spring_extra")
+    if name_preset == "spring" and spring_subpreset is None:
+        raise HTTPException(status_code=400, detail="spring_subpreset is required for name_preset='spring'")
+    if name_preset == "spring" and spring_subpreset not in {"leaf", "bushing", "u_bolt", "spring"}:
+        raise HTTPException(status_code=400, detail="spring_subpreset must be one of: leaf, bushing, u_bolt, spring")
+    if name_preset != "spring":
+        spring_subpreset = None
     group_by_warehouse_flag = _parse_bool(group_by_warehouse, default=True)
     item_summary = get_item_summary(session=session, item_id=item_id, company=company_norm)
     if not item_summary:
@@ -556,6 +569,8 @@ def export_series(
         date_from=date_from,
         date_to=date_to,
         project_groups=project_groups,
+        name_preset=name_preset,
+        spring_subpreset=spring_subpreset,
     )
     if stmt is None:
         raise HTTPException(status_code=404, detail="Данные для серии не найдены.")
@@ -885,6 +900,7 @@ def top_sales(
                 "project_preset": project_preset,
                 "name_preset": name_preset,
                 "spring_subpreset": spring_subpreset,
+                "spring_filter_applied": name_preset in {"spring", "spring_extra"},
                 "group_by_warehouse": group_by_warehouse,
             }
         ),
@@ -952,6 +968,8 @@ def export_top(
     name: str | None = Query(default=None),
     project_label: str | None = Query(default=None, alias="project"),
     project_preset: str | None = Query(default=None),
+    name_preset: str | None = Query(default=None),
+    spring_subpreset: str | None = Query(default=None),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     export_all: str | None = Query(default=None),
@@ -972,6 +990,16 @@ def export_top(
     project_label = _normalize_blank(project_label)
     name = _normalize_blank(name)
     project_preset = _normalize_blank(project_preset)
+    name_preset = _normalize_blank(name_preset)
+    spring_subpreset = _normalize_blank(spring_subpreset)
+    if name_preset not in {None, "spring", "spring_extra"}:
+        raise HTTPException(status_code=400, detail="name_preset must be one of: spring, spring_extra")
+    if name_preset == "spring" and spring_subpreset is None:
+        raise HTTPException(status_code=400, detail="spring_subpreset is required for name_preset='spring'")
+    if name_preset == "spring" and spring_subpreset not in {"leaf", "bushing", "u_bolt", "spring"}:
+        raise HTTPException(status_code=400, detail="spring_subpreset must be one of: leaf, bushing, u_bolt, spring")
+    if name_preset != "spring":
+        spring_subpreset = None
     if project_label:
         project_preset = None
     project_groups = resolve_project_groups(project_preset)
@@ -1018,6 +1046,8 @@ def export_top(
             group_by_warehouse=group_by_warehouse,
             date_from=date_from,
             date_to=date_to,
+            name_preset=name_preset,
+            spring_subpreset=spring_subpreset,
         )
         total_count = total_payload.get("total_count", 0)
         if total_count > export_cap:
@@ -1044,6 +1074,8 @@ def export_top(
                 group_by_warehouse=group_by_warehouse,
                 date_from=date_from,
                 date_to=date_to,
+                name_preset=name_preset,
+                spring_subpreset=spring_subpreset,
             )
             items = payload.get("items", [])
             for item in items:
@@ -1084,6 +1116,8 @@ def export_top(
             group_by_warehouse=group_by_warehouse,
             date_from=date_from,
             date_to=date_to,
+            name_preset=name_preset,
+            spring_subpreset=spring_subpreset,
         )
         items = payload.get("items", [])
         total_count = payload.get("total_count", len(items))

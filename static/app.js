@@ -299,8 +299,8 @@ function collectFilters() {
   const project = projectInput?.value || "";
   const namePresetEl = document.getElementById("name_preset");
   const springSubEl = document.getElementById("spring_subpreset");
-  const namePreset = namePresetEl ? namePresetEl.value : "";
-  const springSubpreset = springSubEl ? springSubEl.value : "";
+  const namePreset = namePresetEl?.value || "";
+  const springSubpreset = springSubEl?.value || "";
   const dateFrom = document.getElementById("filter-date-from").value;
   const dateTo = document.getElementById("filter-date-to").value;
   const warehouses = getSelectedWarehouses();
@@ -354,25 +354,38 @@ function updateSpringSubpresetVisibility() {
   if (springSubpresetGroup) {
     springSubpresetGroup.style.display = shouldShow ? "" : "none";
   }
+  if (!shouldShow && springSubpresetSelect) {
+    springSubpresetSelect.value = "";
+  }
 }
 
 function ensureSpringPresetOptions() {
   if (namePresetSelect) {
     namePresetSelect.innerHTML = `
-      <option value="">Все</option>
+      <option value="">— Нет —</option>
       <option value="spring">Рессора</option>
+      <option value="spring_extra">Рессора доп</option>
     `;
   }
 
   if (springSubpresetSelect) {
     springSubpresetSelect.innerHTML = `
-      <option value="">Все</option>
-      <option value="list">Лист рессоры</option>
+      <option value="">— Все —</option>
+      <option value="leaf">Лист рессоры</option>
       <option value="bushing">Втулка рессоры</option>
-      <option value="spring">Рессора</option>
       <option value="u_bolt">Стремянка рессоры</option>
+      <option value="spring">Рессора</option>
     `;
   }
+}
+
+function appendNamePresetParams(params) {
+  const namePreset = document.getElementById("name_preset")?.value || "";
+  const springSub = document.getElementById("spring_subpreset")?.value || "";
+  if (namePreset) params.set("name_preset", namePreset);
+  else params.delete("name_preset");
+  if (namePreset === "spring" && springSub) params.set("spring_subpreset", springSub);
+  else params.delete("spring_subpreset");
 }
 
 function formatNumber(value) {
@@ -1283,12 +1296,7 @@ async function fetchSeriesWithParams({
   appendParam(params, "date_from", dateFrom);
   appendParam(params, "date_to", dateTo);
   appendParam(params, "project_preset", projectPreset);
-  if (namePreset) {
-    params.append("name_preset", namePreset);
-  }
-  if (namePreset === "spring" && springSubpreset) {
-    params.append("spring_subpreset", springSubpreset);
-  }
+  appendNamePresetParams(params);
   const url = buildUrl(`/series?${params.toString()}`);
   updateSeriesDebugPanel({ url, status: "loading", points: [] });
   if (DEBUG) {
@@ -1458,16 +1466,7 @@ async function fetchTop() {
   appendParam(params, "company", company);
   appendParam(params, "project", project);
   appendParam(params, "project_preset", projectPreset);
-  const namePresetValue = document.getElementById("name_preset")?.value;
-  const springSub = document.getElementById("spring_subpreset")?.value;
-
-  if (namePresetValue) {
-    params.append("name_preset", namePresetValue);
-  }
-
-  if (namePresetValue === "spring" && springSub) {
-    params.append("spring_subpreset", springSub);
-  }
+  appendNamePresetParams(params);
   appendParam(params, "warehouses", warehouses);
   appendParam(params, "date_from", dateFrom);
   appendParam(params, "date_to", dateTo);
@@ -1621,12 +1620,7 @@ seriesExportButton?.addEventListener("click", () => {
   appendParam(search, "date_from", params.dateFrom);
   appendParam(search, "date_to", params.dateTo);
   appendParam(search, "project_preset", params.projectPreset);
-  if (params.namePreset) {
-    search.append("name_preset", params.namePreset);
-  }
-  if (params.namePreset === "spring" && params.springSubpreset) {
-    search.append("spring_subpreset", params.springSubpreset);
-  }
+  appendNamePresetParams(search);
   appendParam(
     search,
     "group_by_warehouse",
@@ -1664,12 +1658,7 @@ topExportButton?.addEventListener("click", () => {
   appendParam(params, "company", company);
   appendParam(params, "project", project);
   appendParam(params, "project_preset", projectPreset);
-  if (namePreset) {
-    params.append("name_preset", namePreset);
-  }
-  if (namePreset === "spring" && springSubpreset) {
-    params.append("spring_subpreset", springSubpreset);
-  }
+  appendNamePresetParams(params);
   appendParam(params, "warehouses", warehouses);
   appendParam(params, "date_from", dateFrom);
   appendParam(params, "date_to", dateTo);

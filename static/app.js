@@ -1526,6 +1526,8 @@ async function fetchTop() {
   appendParam(params, "page", topPage);
   appendParam(params, "group_by_warehouse", topGroupByWarehouse);
   const url = buildUrl(`/top?${params.toString()}`);
+  console.log("topSearchQuery", topSearchQuery);
+  console.log("topUrlFinal", url);
   updateFilterDebugBadge({ namePreset, springSubpreset, topUrl: url });
   if (DEBUG) {
     console.log("topParams", {

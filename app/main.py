@@ -979,6 +979,8 @@ def top_sales(
         "Top results",
         extra=safe_extra(
             {
+                "q": q,
+                "q_filter_applied": bool(q),
                 "rows_count": len(payload.get("items", [])),
                 "total_count": payload.get("total_count"),
             }

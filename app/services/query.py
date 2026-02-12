@@ -738,7 +738,12 @@ def get_top_sales(
 ) -> dict[str, Any]:
     q_norm = (q or "").strip()
     search_pattern = f"%{q_norm}%" if q_norm else None
-    logger.info("Top search applied=%s q=%r pattern=%r", bool(q_norm), q_norm, search_pattern)
+    logger.info(
+        "Top search input: q=%r normalized=%r filter_applied=%s",
+        q,
+        q_norm,
+        bool(q_norm),
+    )
 
     item_ids_stmt = None
     if sku or manufacturer or name or project or project_groups or company or name_preset or q_norm:
@@ -749,15 +754,6 @@ def get_top_sales(
                 Item.sku_norm.ilike(f"%{sku}%"),
             )
             item_ids_stmt = item_ids_stmt.where(sku_filter)
-        if q_norm:
-            q_bind = bindparam("top_search_q_pattern", value=search_pattern)
-            q_filter = or_(
-                Item.canonical_sku.ilike(q_bind),
-                Item.mfg_sku_norm.ilike(q_bind),
-                Item.name.ilike(q_bind),
-                Item.manufacturer_norm.ilike(q_bind),
-            )
-            item_ids_stmt = item_ids_stmt.where(q_filter)
         if manufacturer:
             item_ids_stmt = item_ids_stmt.where(
                 Item.manufacturer_norm.ilike(f"%{manufacturer}%")
@@ -866,13 +862,27 @@ def get_top_sales(
 
     base_stmt = final_base_stmt
 
-    total_count = session.execute(
-        select(func.count()).select_from(base_stmt.subquery())
-    ).scalar() or 0
-    logger.info("Top total_count(after filters)=%s", total_count)
+    if q_norm:
+        q_bind = bindparam("top_search_q_pattern", value=search_pattern)
+        q_clauses = [
+            Item.canonical_sku.ilike(q_bind),
+            Item.name.ilike(q_bind),
+        ]
+        manufacturer_column = getattr(Item, "manufacturer", None)
+        if manufacturer_column is not None:
+            q_clauses.append(manufacturer_column.ilike(q_bind))
+        elif hasattr(Item, "manufacturer_norm"):
+            q_clauses.append(Item.manufacturer_norm.ilike(q_bind))
+        base_stmt = base_stmt.where(or_(*q_clauses))
+
+    count_subq = base_stmt.order_by(None).subquery()
+    total_count = (
+        session.execute(select(func.count()).select_from(count_subq)).scalar() or 0
+    )
+    logger.info("Top total_count(after all filters incl. q)=%s", total_count)
 
     base_subq = base_stmt.subquery()
-    data_stmt = (
+    paged_stmt = (
         select(
             base_subq.c.item_id,
             base_subq.c.canonical_sku,
@@ -891,8 +901,33 @@ def get_top_sales(
         .offset(offset)
     )
 
-    rows = session.execute(data_stmt).mappings().all()
-    logger.info("Top rows(page)=%s", len(rows))
+    try:
+        count_sql = str(
+            select(func.count()).select_from(count_subq).compile(
+                session.bind,
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        paged_sql = str(
+            paged_stmt.compile(
+                session.bind,
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+    except Exception:
+        logger.exception("Top SQL compile failed")
+        count_sql = "<unavailable>"
+        paged_sql = "<unavailable>"
+
+    logger.info("Top count SQL: %s", count_sql)
+    logger.info("Top paged SQL: %s", paged_sql)
+
+    rows = session.execute(paged_stmt).mappings().all()
+    logger.info(
+        "Top page rows returned=%s filter_applied=%s",
+        len(rows),
+        bool(q_norm),
+    )
     logger.info(
         "Top sales result summary",
         extra={"rows_count": len(rows), "total_count": total_count},

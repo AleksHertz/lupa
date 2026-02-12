@@ -738,7 +738,7 @@ def get_top_sales(
 ) -> dict[str, Any]:
     q_norm = (q or "").strip()
     search_pattern = f"%{q_norm}%" if q_norm else None
-    logger.info("Top search applied=%s q=%r pattern=%r", "yes" if q_norm else "no", q_norm, search_pattern)
+    logger.info("Top search applied=%s q=%r pattern=%r", bool(q_norm), q_norm, search_pattern)
 
     item_ids_stmt = None
     if sku or manufacturer or name or project or project_groups or company or name_preset or q_norm:
@@ -869,7 +869,7 @@ def get_top_sales(
     total_count = session.execute(
         select(func.count()).select_from(base_stmt.subquery())
     ).scalar() or 0
-    logger.info("Top count after filters=%s", total_count)
+    logger.info("Top total_count(after filters)=%s", total_count)
 
     base_subq = base_stmt.subquery()
     data_stmt = (
@@ -892,7 +892,7 @@ def get_top_sales(
     )
 
     rows = session.execute(data_stmt).mappings().all()
-    logger.info("Top page rows=%s", len(rows))
+    logger.info("Top rows(page)=%s", len(rows))
     logger.info(
         "Top sales result summary",
         extra={"rows_count": len(rows), "total_count": total_count},

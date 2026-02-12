@@ -926,6 +926,12 @@ def top_sales(
     logger.info("Top request normalized_query_string=%s", normalized_query_string)
     logger.info("Top request q=%s", q)
     logger.info(
+        "Top spring-aware params: q=%r name_preset=%s spring_subpreset=%s",
+        q,
+        name_preset,
+        spring_subpreset,
+    )
+    logger.info(
         "Top params",
         extra=safe_extra(
             {

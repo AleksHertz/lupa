@@ -471,11 +471,29 @@ def series(
     date_from: date = Query(...),
     date_to: date = Query(...),
     project_preset: str | None = Query(default=None),
+    name_preset: str | None = Query(default=None),
+    spring_subpreset: str | None = Query(default=None),
     session: Session = Depends(get_session),
 ):
     warehouses = _normalize_csv_list(warehouses)
     company_norm = _normalize_company(_normalize_blank(company))
     project_groups = resolve_project_groups(_normalize_blank(project_preset))
+    name_preset = _normalize_blank(name_preset)
+    spring_subpreset = _normalize_blank(spring_subpreset)
+    if name_preset not in {None, "spring", "spring_extra"}:
+        raise HTTPException(status_code=400, detail="name_preset must be one of: spring, spring_extra")
+    if name_preset == "spring" and spring_subpreset is None:
+        raise HTTPException(
+            status_code=400,
+            detail="spring_subpreset is required for name_preset='spring'",
+        )
+    if name_preset == "spring" and spring_subpreset not in {"leaf", "bushing", "u_bolt", "spring"}:
+        raise HTTPException(
+            status_code=400,
+            detail="spring_subpreset must be one of: leaf, bushing, u_bolt, spring",
+        )
+    if name_preset != "spring":
+        spring_subpreset = None
     logger.info(
         "Series params",
         extra={
@@ -485,6 +503,8 @@ def series(
             "warehouses": warehouses,
             "item_id": item_id,
             "project_preset": project_preset,
+            "name_preset": name_preset,
+            "spring_subpreset": spring_subpreset,
         },
     )
     payload = get_series_v2(
@@ -495,6 +515,8 @@ def series(
         date_from=date_from,
         date_to=date_to,
         project_groups=project_groups,
+        name_preset=name_preset,
+        spring_subpreset=spring_subpreset,
     )
     logger.info(
         "Series response",
@@ -796,6 +818,8 @@ def top_sales(
     name: str | None = Query(default=None),
     project_label: str | None = Query(default=None, alias="project"),
     project_preset: str | None = Query(default=None),
+    name_preset: str | None = Query(default=None),
+    spring_subpreset: str | None = Query(default=None),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     session: Session = Depends(get_session),
@@ -813,6 +837,22 @@ def top_sales(
     project_label = _normalize_blank(project_label)
     name = _normalize_blank(name)
     project_preset = _normalize_blank(project_preset)
+    name_preset = _normalize_blank(name_preset)
+    spring_subpreset = _normalize_blank(spring_subpreset)
+    if name_preset not in {None, "spring", "spring_extra"}:
+        raise HTTPException(status_code=400, detail="name_preset must be one of: spring, spring_extra")
+    if name_preset == "spring" and spring_subpreset is None:
+        raise HTTPException(
+            status_code=400,
+            detail="spring_subpreset is required for name_preset='spring'",
+        )
+    if name_preset == "spring" and spring_subpreset not in {"leaf", "bushing", "u_bolt", "spring"}:
+        raise HTTPException(
+            status_code=400,
+            detail="spring_subpreset must be one of: leaf, bushing, u_bolt, spring",
+        )
+    if name_preset != "spring":
+        spring_subpreset = None
     if project_label:
         project_preset = None
     project_groups = resolve_project_groups(project_preset)
@@ -843,6 +883,8 @@ def top_sales(
                 "item_name": name,
                 "project": project_label,
                 "project_preset": project_preset,
+                "name_preset": name_preset,
+                "spring_subpreset": spring_subpreset,
                 "group_by_warehouse": group_by_warehouse,
             }
         ),
@@ -862,6 +904,8 @@ def top_sales(
             group_by_warehouse=group_by_warehouse,
             date_from=date_from,
             date_to=date_to,
+            name_preset=name_preset,
+            spring_subpreset=spring_subpreset,
         )
     except Exception:
         logger.exception(

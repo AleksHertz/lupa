@@ -14,6 +14,7 @@ from sqlalchemy import (
     desc,
     text,
 )
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -29,6 +30,7 @@ class Item(Base):
     mfg_sku_norm: Mapped[str | None] = mapped_column(Text, nullable=True)
     manufacturer_norm: Mapped[str | None] = mapped_column(Text, nullable=True)
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    name_tsv: Mapped[str | None] = mapped_column(TSVECTOR, nullable=True)
     brand: Mapped[str | None] = mapped_column(Text, nullable=True)
     group_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     project_label: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -1,5 +1,4 @@
 import logging
-import os
 import unicodedata
 from datetime import date, timedelta
 from typing import Any
@@ -52,42 +51,38 @@ PROJECT_PRESET_MAP = {
     "china": PROJECT_GROUPS["Китай"],
 }
 
-SPRING_BASE_PATTERN = r'(^|[^а-яё])рессор(а|ы)?([^а-яё]|$)'
-SPRING_TURBO_EXCLUDE_PATTERN = r'турбокомпрессор(а|ы|ов)?'
-SPRING_SUBPRESET_PATTERNS = {
-    "leaf": r"((^|[^а-яё])лист([^а-яё]|$).*(^|[^а-яё])рессор(а|ы)?([^а-яё]|$))|((^|[^а-яё])рессор(а|ы)?([^а-яё]|$).*(^|[^а-яё])лист([^а-яё]|$))",
-    "bushing": r"((^|[^а-яё])втулк[аи]([^а-яё]|$).*(^|[^а-яё])рессор(а|ы)?([^а-яё]|$))|((^|[^а-яё])рессор(а|ы)?([^а-яё]|$).*(^|[^а-яё])втулк[аи]([^а-яё]|$))",
-    "u_bolt": r"((^|[^а-яё])стремянк[аи]([^а-яё]|$).*(^|[^а-яё])рессор(а|ы)?([^а-яё]|$))|((^|[^а-яё])рессор(а|ы)?([^а-яё]|$).*(^|[^а-яё])стремянк[аи]([^а-яё]|$))",
-    "spring": SPRING_BASE_PATTERN,
+SPRING_FTS_EXCLUDES = (
+    "пневморессор:*",
+    "пневмо & рессор:*",
+    "турбокомпрессор:*",
+)
+SPRING_SUBPRESET_FTS_QUERY = {
+    "leaf": "лист рессора",
+    "bushing": "втулка рессора",
+    "u_bolt": "стремянка рессора",
+    "spring": "рессора",
 }
-SPRING_EXTRA_EXCLUDE_KEYS = ("leaf", "bushing", "u_bolt")
-DEBUG_PRESET = os.getenv("DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
-
-
+SPRING_FALLBACK_BASE_PATTERN = r'(^|[^а-яё])рессор(а|ы)?([^а-яё]|$)'
+SPRING_FALLBACK_EXCLUDE_PATTERNS = (
+    r'пневмо[-\s]?рессор(а|ы|ой|у|е|ам|ах|ами)?',
+    r'турбокомпрессор(а|ы|ов|ом|у|е|ами|ах)?',
+)
 def resolve_project_groups(preset: str | None) -> list[str] | None:
     if not preset:
         return None
     return PROJECT_PRESET_MAP.get(preset.lower())
 
 
-def _resolve_spring_filter(
-    name_preset: str | None,
-    spring_subpreset: str | None,
-) -> tuple[str | None, tuple[str, ...], str | None]:
+def _resolve_spring_fts_query(name_preset: str | None, spring_subpreset: str | None) -> tuple[str | None, str | None]:
     if name_preset == "spring":
         if not spring_subpreset:
-            return None, (), "spring_subpreset is required for name_preset='spring'"
-        if spring_subpreset not in SPRING_SUBPRESET_PATTERNS:
-            return None, (), "spring_subpreset must be one of: leaf, bushing, u_bolt, spring"
-        return SPRING_SUBPRESET_PATTERNS[spring_subpreset], (), None
+            return None, "spring_subpreset is required for name_preset='spring'"
+        if spring_subpreset not in SPRING_SUBPRESET_FTS_QUERY:
+            return None, "spring_subpreset must be one of: leaf, bushing, u_bolt, spring"
+        return SPRING_SUBPRESET_FTS_QUERY[spring_subpreset], None
     if name_preset == "spring_extra":
-        return (
-            SPRING_BASE_PATTERN,
-            tuple(SPRING_SUBPRESET_PATTERNS[key] for key in SPRING_EXTRA_EXCLUDE_KEYS),
-            None,
-        )
-    return None, (), None
-
+        return "рессора", None
+    return None, None
 
 
 
@@ -96,17 +91,56 @@ def _is_spring_query(q_norm: str | None, name_preset: str | None) -> bool:
         return True
     if not q_norm:
         return False
-    return 'рессора' in q_norm.casefold() or 'рессоры' in q_norm.casefold()
+    q_cf = q_norm.casefold()
+    return "рессора" in q_cf or "рессоры" in q_cf or "рессор" in q_cf
 
 
-def _apply_spring_name_regex(stmt: Any, *, param_prefix: str, include: bool) -> tuple[Any, str | None]:
-    if not include:
-        return stmt, None
+
+def _apply_spring_fts_filters(stmt: Any, *, fts_query: str, param_prefix: str) -> Any:
+    web_param = f"{param_prefix}_spring_webquery"
+    stmt = stmt.where(
+        text(
+            f"items.name_tsv @@ websearch_to_tsquery('russian', :{web_param})"
+        )
+    ).params(**{web_param: fts_query})
+
+    applied_excludes: list[str] = []
+    for idx, exclude_query in enumerate(SPRING_FTS_EXCLUDES):
+        exclude_param = f"{param_prefix}_spring_exclude_{idx}"
+        stmt = stmt.where(
+            text(
+                f"NOT (items.name_tsv @@ to_tsquery('russian', :{exclude_param}))"
+            )
+        ).params(**{exclude_param: exclude_query})
+        applied_excludes.append(exclude_query)
+
+    logger.info(
+        "Spring FTS filter applied: fts_query=%s exclude_tsqueries=%s",
+        fts_query,
+        applied_excludes,
+    )
+    return stmt
+
+
+
+def _apply_spring_name_regex_fallback(stmt: Any, *, param_prefix: str) -> Any:
     include_param = f"{param_prefix}_spring_word_pattern"
-    exclude_param = f"{param_prefix}_spring_exclude_pattern"
-    stmt = stmt.where(text(f"items.name ~* :{include_param}")).params(**{include_param: SPRING_BASE_PATTERN})
-    stmt = stmt.where(text(f"NOT (items.name ~* :{exclude_param})")).params(**{exclude_param: SPRING_TURBO_EXCLUDE_PATTERN})
-    return stmt, SPRING_BASE_PATTERN
+    stmt = stmt.where(text(f"items.name ~* :{include_param}")).params(
+        **{include_param: SPRING_FALLBACK_BASE_PATTERN}
+    )
+    for idx, exclude_pattern in enumerate(SPRING_FALLBACK_EXCLUDE_PATTERNS):
+        exclude_param = f"{param_prefix}_spring_exclude_pattern_{idx}"
+        stmt = stmt.where(text(f"NOT (items.name ~* :{exclude_param})")).params(
+            **{exclude_param: exclude_pattern}
+        )
+    logger.warning(
+        "Spring regex fallback applied (FTS unavailable): include=%s excludes=%s",
+        SPRING_FALLBACK_BASE_PATTERN,
+        SPRING_FALLBACK_EXCLUDE_PATTERNS,
+    )
+    return stmt
+
+
 
 def apply_name_presets(stmt: Any, name_preset: str | None, spring_subpreset: str | None) -> tuple[Any, dict[str, Any]]:
     logger.info(
@@ -114,39 +148,30 @@ def apply_name_presets(stmt: Any, name_preset: str | None, spring_subpreset: str
         name_preset,
         spring_subpreset,
     )
-    spring_pattern, spring_exclude_patterns, spring_error = _resolve_spring_filter(name_preset, spring_subpreset)
+    spring_fts_query, spring_error = _resolve_spring_fts_query(name_preset, spring_subpreset)
     if spring_error:
         raise ValueError(spring_error)
-    applied = bool(spring_pattern)
-    if spring_pattern:
-        stmt = stmt.where(text("items.name ~* :spring_pattern")).params(spring_pattern=spring_pattern)
-    for idx, exclude_pattern in enumerate(spring_exclude_patterns):
-        stmt = stmt.where(text(f"NOT (items.name ~* :spring_exclude_pattern_{idx})")).params(
-            **{f"spring_exclude_pattern_{idx}": exclude_pattern}
-        )
-    if spring_pattern:
-        stmt = stmt.where(text("NOT (items.name ~* :spring_exclude_turbo_pattern)")).params(
-            spring_exclude_turbo_pattern=SPRING_TURBO_EXCLUDE_PATTERN
-        )
+    applied = bool(spring_fts_query)
+    if spring_fts_query:
+        stmt = _apply_spring_fts_filters(stmt, fts_query=spring_fts_query, param_prefix="preset")
     logger.info(
-        "Spring preset applied: %s pattern=%s",
+        "Spring preset applied: %s fts_query=%s",
         "yes" if applied else "no",
-        spring_pattern or "—",
+        spring_fts_query or "—",
     )
     return stmt, {
         "spring_filter_applied": applied,
-        "pattern": spring_pattern,
-        "exclude_patterns": spring_exclude_patterns,
+        "fts_query": spring_fts_query,
+        "exclude_tsqueries": SPRING_FTS_EXCLUDES,
     }
 
 
+
 def _log_spring_count_estimate(session: Session, item_ids_stmt: Any, name_preset: str | None, spring_subpreset: str | None) -> None:
-    if not DEBUG_PRESET:
-        return
     count_stmt = select(func.count()).select_from(item_ids_stmt.subquery())
     count_value = int(session.execute(count_stmt).scalar() or 0)
     logger.info(
-        "Rows after spring preset filter (count estimate): %s",
+        "Rows after spring filter (filtered_ids_count=%s)",
         count_value,
         extra={"name_preset": name_preset, "spring_subpreset": spring_subpreset},
     )
@@ -429,9 +454,10 @@ def build_series_query(
         item_filter_stmt = item_filter_stmt.where(Item.company == company)
     item_filter_stmt, preset_meta = apply_name_presets(item_filter_stmt, name_preset, spring_subpreset)
     logger.info(
-        "Series spring filter applied: %s pattern=%s",
+        "Series spring filter applied: %s fts_query=%s exclude_tsqueries=%s",
         "yes" if preset_meta["spring_filter_applied"] else "no",
-        preset_meta["pattern"] or "—",
+        preset_meta["fts_query"] or "—",
+        preset_meta["exclude_tsqueries"],
     )
     if session.execute(item_filter_stmt.limit(1)).scalar() is None:
         return None, [], {"min": None, "max": None}
@@ -763,12 +789,15 @@ def get_top_sales(
     q_norm = (q or "").strip()
     search_pattern = f"%{q_norm}%" if q_norm else None
     spring_query_filter = _is_spring_query(q_norm, name_preset)
+    spring_query_fts = "рессора" if spring_query_filter else None
     logger.info(
-        "Top search input: q=%r normalized=%r filter_applied=%s spring_query_filter=%s",
+        "Top search input: q=%r normalized=%r filter_applied=%s spring_query_filter=%s name_preset=%s spring_subpreset=%s",
         q,
         q_norm,
         bool(q_norm),
         spring_query_filter,
+        name_preset,
+        spring_subpreset,
     )
 
     item_ids_stmt = None
@@ -793,12 +822,18 @@ def get_top_sales(
         if company:
             item_ids_stmt = item_ids_stmt.where(Item.company == company)
         item_ids_stmt, preset_meta = apply_name_presets(item_ids_stmt, name_preset, spring_subpreset)
-        item_ids_stmt, q_spring_pattern = _apply_spring_name_regex(item_ids_stmt, param_prefix="top_item_ids", include=spring_query_filter)
+        if spring_query_fts:
+            item_ids_stmt = _apply_spring_fts_filters(
+                item_ids_stmt,
+                fts_query=spring_query_fts,
+                param_prefix="top_item_ids_q",
+            )
         logger.info(
-            "Top spring filter applied: %s pattern=%s q_spring_pattern=%s",
-            "yes" if preset_meta["spring_filter_applied"] else "no",
-            preset_meta["pattern"] or "—",
-            q_spring_pattern or "—",
+            "Top spring filter applied: %s preset_fts_query=%s q_fts_query=%s exclude_tsqueries=%s",
+            "yes" if (preset_meta["spring_filter_applied"] or bool(spring_query_fts)) else "no",
+            preset_meta["fts_query"] or "—",
+            spring_query_fts or "—",
+            preset_meta["exclude_tsqueries"],
         )
         _log_spring_count_estimate(session, item_ids_stmt, name_preset, spring_subpreset)
 
@@ -890,22 +925,18 @@ def get_top_sales(
 
     base_stmt = final_base_stmt
 
-    if q_norm:
-        if spring_query_filter:
-            base_stmt, q_regex = _apply_spring_name_regex(base_stmt, param_prefix="top_base", include=True)
-            logger.info("Top q spring regex applied: pattern=%s", q_regex)
-        else:
-            q_bind = bindparam("top_search_q_pattern", value=search_pattern)
-            q_clauses = [
-                Item.canonical_sku.ilike(q_bind),
-                Item.name.ilike(q_bind),
-            ]
-            manufacturer_column = getattr(Item, "manufacturer", None)
-            if manufacturer_column is not None:
-                q_clauses.append(manufacturer_column.ilike(q_bind))
-            elif hasattr(Item, "manufacturer_norm"):
-                q_clauses.append(Item.manufacturer_norm.ilike(q_bind))
-            base_stmt = base_stmt.where(or_(*q_clauses))
+    if q_norm and not spring_query_filter:
+        q_bind = bindparam("top_search_q_pattern", value=search_pattern)
+        q_clauses = [
+            Item.canonical_sku.ilike(q_bind),
+            Item.name.ilike(q_bind),
+        ]
+        manufacturer_column = getattr(Item, "manufacturer", None)
+        if manufacturer_column is not None:
+            q_clauses.append(manufacturer_column.ilike(q_bind))
+        elif hasattr(Item, "manufacturer_norm"):
+            q_clauses.append(Item.manufacturer_norm.ilike(q_bind))
+        base_stmt = base_stmt.where(or_(*q_clauses))
 
     count_subq = base_stmt.order_by(None).subquery()
     total_count = (

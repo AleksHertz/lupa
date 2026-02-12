@@ -736,13 +736,12 @@ def get_top_sales(
     spring_subpreset: str | None = None,
     q: str | None = None,
 ) -> dict[str, Any]:
-    normalized_q = q.strip() if q and q.strip() else None
-    search_pattern = f"%{normalized_q}%" if normalized_q else None
-    logger.info("Top search q=%s applied=%s", q, "yes" if normalized_q else "no")
-    logger.info("Top search q pattern=%s", search_pattern or "—")
+    q_norm = (q or "").strip()
+    search_pattern = f"%{q_norm}%" if q_norm else None
+    logger.info("Top search applied=%s q=%r pattern=%r", bool(q_norm), q_norm, search_pattern)
 
     item_ids_stmt = None
-    if sku or manufacturer or name or project or project_groups or company or name_preset or normalized_q:
+    if sku or manufacturer or name or project or project_groups or company or name_preset or q_norm:
         item_ids_stmt = select(Item.id)
         if sku:
             sku_filter = or_(
@@ -750,7 +749,7 @@ def get_top_sales(
                 Item.sku_norm.ilike(f"%{sku}%"),
             )
             item_ids_stmt = item_ids_stmt.where(sku_filter)
-        if normalized_q:
+        if q_norm:
             q_bind = bindparam("top_search_q_pattern", value=search_pattern)
             q_filter = or_(
                 Item.canonical_sku.ilike(q_bind),
@@ -865,7 +864,14 @@ def get_top_sales(
     if company:
         final_base_stmt = final_base_stmt.where(Item.company == company)
 
-    base_subq = final_base_stmt.subquery()
+    base_stmt = final_base_stmt
+
+    total_count = session.execute(
+        select(func.count()).select_from(base_stmt.subquery())
+    ).scalar() or 0
+    logger.info("Top count after filters=%s", total_count)
+
+    base_subq = base_stmt.subquery()
     data_stmt = (
         select(
             base_subq.c.item_id,
@@ -885,11 +891,8 @@ def get_top_sales(
         .offset(offset)
     )
 
-    total_count_stmt = select(func.count()).select_from(base_subq)
-    total_count = session.execute(total_count_stmt).scalar_one() or 0
-    logger.info("Top count after filters=%s", total_count)
-
     rows = session.execute(data_stmt).mappings().all()
+    logger.info("Top page rows=%s", len(rows))
     logger.info(
         "Top sales result summary",
         extra={"rows_count": len(rows), "total_count": total_count},

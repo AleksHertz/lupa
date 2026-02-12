@@ -1603,13 +1603,19 @@ function buildSeriesExportParams() {
   };
 }
 
+async function reloadTop({ resetPage = false } = {}) {
+  if (resetPage) {
+    topPage = 1;
+  }
+  await fetchTop();
+}
+
 applyFilters?.addEventListener("click", (event) => {
   event.preventDefault();
   if (DEBUG) {
     console.log("filtersApplied", collectFilters());
   }
-  topPage = 1;
-  fetchTop();
+  reloadTop({ resetPage: true });
 });
 
 datePreset?.addEventListener("change", (event) => {
@@ -1618,27 +1624,29 @@ datePreset?.addEventListener("change", (event) => {
 
 topSearchInput?.addEventListener("input", (event) => {
   const nextQuery = event.target?.value?.trim() || "";
+  if (nextQuery === topSearchQuery) {
+    return;
+  }
   topSearchQuery = nextQuery;
-  topPage = 1;
   if (topSearchDebounceTimer) {
     window.clearTimeout(topSearchDebounceTimer);
   }
   topSearchDebounceTimer = window.setTimeout(() => {
-    fetchTop();
+    reloadTop({ resetPage: true });
   }, 300);
 });
 
 topPagePrevButton?.addEventListener("click", () => {
   if (topPage > 1) {
     topPage -= 1;
-    fetchTop();
+    reloadTop();
   }
 });
 
 topPageNextButton?.addEventListener("click", () => {
   if (topPage < topTotalPages) {
     topPage += 1;
-    fetchTop();
+    reloadTop();
   }
 });
 
@@ -1646,15 +1654,14 @@ topPageNumberInput?.addEventListener("change", () => {
   const nextPage = Number.parseInt(topPageNumberInput.value, 10);
   if (!Number.isFinite(nextPage)) return;
   topPage = Math.min(Math.max(nextPage, 1), topTotalPages);
-  fetchTop();
+  reloadTop();
 });
 
 topPageSizeSelect?.addEventListener("change", () => {
   const nextSize = Number.parseInt(topPageSizeSelect.value, 10);
   if (!Number.isFinite(nextSize)) return;
   topPageSize = nextSize;
-  topPage = 1;
-  fetchTop();
+  reloadTop({ resetPage: true });
 });
 
 seriesExportButton?.addEventListener("click", () => {

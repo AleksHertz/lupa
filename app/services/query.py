@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from cachetools import TTLCache
-from sqlalchemy import and_, func, literal, or_, select, text
+from sqlalchemy import and_, bindparam, func, literal, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.models import FactDeltaChange, FactSnapshot, Item
@@ -736,8 +736,13 @@ def get_top_sales(
     spring_subpreset: str | None = None,
     q: str | None = None,
 ) -> dict[str, Any]:
+    normalized_q = q.strip() if q and q.strip() else None
+    search_pattern = f"%{normalized_q}%" if normalized_q else None
+    logger.info("Top search q=%s applied=%s", q, "yes" if normalized_q else "no")
+    logger.info("Top search q pattern=%s", search_pattern or "—")
+
     item_ids_stmt = None
-    if sku or manufacturer or name or project or project_groups or company or name_preset or q:
+    if sku or manufacturer or name or project or project_groups or company or name_preset or normalized_q:
         item_ids_stmt = select(Item.id)
         if sku:
             sku_filter = or_(
@@ -745,17 +750,15 @@ def get_top_sales(
                 Item.sku_norm.ilike(f"%{sku}%"),
             )
             item_ids_stmt = item_ids_stmt.where(sku_filter)
-        if q:
-            query = q.strip()
-            if query:
-                q_filter = or_(
-                    Item.canonical_sku.ilike(f"%{query}%"),
-                    Item.sku_norm.ilike(f"%{query}%"),
-                    Item.mfg_sku_norm.ilike(f"%{query}%"),
-                    Item.name.ilike(f"%{query}%"),
-                    Item.manufacturer_norm.ilike(f"%{query}%"),
-                )
-                item_ids_stmt = item_ids_stmt.where(q_filter)
+        if normalized_q:
+            q_bind = bindparam("top_search_q_pattern", value=search_pattern)
+            q_filter = or_(
+                Item.canonical_sku.ilike(q_bind),
+                Item.mfg_sku_norm.ilike(q_bind),
+                Item.name.ilike(q_bind),
+                Item.manufacturer_norm.ilike(q_bind),
+            )
+            item_ids_stmt = item_ids_stmt.where(q_filter)
         if manufacturer:
             item_ids_stmt = item_ids_stmt.where(
                 Item.manufacturer_norm.ilike(f"%{manufacturer}%")
@@ -884,6 +887,7 @@ def get_top_sales(
 
     total_count_stmt = select(func.count()).select_from(base_subq)
     total_count = session.execute(total_count_stmt).scalar_one() or 0
+    logger.info("Top count after filters=%s", total_count)
 
     rows = session.execute(data_stmt).mappings().all()
     logger.info(
